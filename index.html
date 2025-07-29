@@ -1,0 +1,1170 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>3D Face Model with Fixed Tracking</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            background: #000;
+            overflow: hidden;
+            font-family: Arial, sans-serif;
+        }
+        
+        #container {
+            display: flex;
+            width: 100vw;
+            height: 100vh;
+            align-items: center;
+            justify-content: center;
+            position: relative;
+            overflow: hidden;
+        }
+        
+        #video {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            object-fit: cover;
+            transform: scaleX(1);
+        }
+        
+        #webglCanvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            pointer-events: none;
+            object-fit: cover;
+        }
+        
+        #status {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            z-index: 1000;
+            color: white;
+            background: rgba(0,0,0,0.9);
+            padding: 15px 20px;
+            border-radius: 10px;
+            font-size: 14px;
+            font-weight: bold;
+            backdrop-filter: blur(10px);
+            border: 2px solid rgba(255,255,255,0.1);
+            max-width: 350px;
+        }
+        
+        .status-item {
+            margin: 5px 0;
+        }
+        
+        #modelOptions {
+            position: absolute;
+            bottom: 20px;
+            left: 20px;
+            z-index: 1000;
+            color: white;
+            background: rgba(0,0,0,0.9);
+            padding: 15px 20px;
+            border-radius: 10px;
+            font-size: 12px;
+            backdrop-filter: blur(10px);
+            border: 2px solid rgba(255,255,255,0.1);
+        }
+        
+        button {
+            background: #007acc;
+            color: white;
+            border: none;
+            padding: 8px 12px;
+            margin: 5px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 12px;
+        }
+        
+        button:hover {
+            background: #005a9e;
+        }
+        
+        #expressionDebug {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            z-index: 1000;
+            color: white;
+            background: rgba(0,0,0,0.9);
+            padding: 10px 15px;
+            border-radius: 8px;
+            font-size: 11px;
+            font-family: monospace;
+            max-height: 80vh;
+            overflow-y: auto;
+            min-width: 200px;
+        }
+        
+        @media (max-width: 768px) {
+            #status, #modelOptions {
+                font-size: 11px;
+                padding: 10px 12px;
+                max-width: calc(50vw - 20px);
+            }
+            
+            #expressionDebug {
+                font-size: 10px;
+                max-width: calc(45vw - 20px);
+                max-height: 50vh;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div id="container">
+        <video id="video" autoplay muted playsinline></video>
+        <canvas id="webglCanvas"></canvas>
+        
+        <div id="status">
+            <div class="status-item">Status: <span id="statusText">Loading...</span></div>
+            <div class="status-item">Model: <span id="modelStatus">Select Model Type</span></div>
+            <div class="status-item">Face: <span id="faceDetected">No</span></div>
+            <div class="status-item">Expressions: <span id="expressionCount">0</span></div>
+            <div class="status-item">Sync: <span id="syncInfo">Ready</span></div>
+        </div>
+        
+        <div id="modelOptions">
+            <div><strong>Model Options:</strong></div>
+            <button onclick="loadBuiltInModel()">Use Built-in Face Model</button>
+            <button onclick="loadGLBModel()">Try GLB Model</button>
+            <button onclick="loadFromURL()">Load from URL</button>
+            <div style="margin-top: 10px;">
+                <input type="file" id="fileInput" accept=".glb,.gltf" style="display:none;">
+                <button onclick="document.getElementById('fileInput').click()">Upload GLB File</button>
+            </div>
+        </div>
+        
+        <div id="expressionDebug">
+            <div><strong>Live Expression Values:</strong></div>
+            <div id="expressionValues">No face detected</div>
+        </div>
+    </div>
+
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.157.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.157.0/examples/jsm/"
+            }
+        }
+    </script>
+    
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest"></script>
+    
+    <script type="module">
+        import * as THREE from 'three';
+        import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+        import { KTX2Loader } from 'three/addons/loaders/KTX2Loader.js';
+        import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js';
+
+        class ModernFaceTracker {
+            constructor() {
+                this.video = document.getElementById('video');
+                this.webglCanvas = document.getElementById('webglCanvas');
+                this.gltfLoader = new GLTFLoader();
+                this.ktx2Loader = new KTX2Loader(); 
+                
+                // Face detection
+                this.faceMesh = null;
+                this.camera = null;
+                this.isProcessing = false;
+                this.faces = [];
+                
+                // Three.js setup
+                this.scene = null;
+                this.threeCamera = null;
+                this.renderer = null;
+                this.faceModel = null;
+                this.faceMeshObject = null;
+                
+                // Expression tracking
+                this.expressions = {};
+                this.morphTargetNames = [];
+                this.expressionValues = {};
+                
+                // Face tracking - improved variables
+                this.faceCenter = { x: 0.5, y: 0.5, z: 0 };
+                this.headRotation = { x: 0, y: 0, z: 0 };
+                this.faceScale = 1.0;
+                this.videoAspect = 1;
+                this.canvasAspect = 1;
+                
+                // REAL-WORLD FACE SIZE CALIBRATION
+                this.AVERAGE_INTERPUPILLARY_DISTANCE = 0.063; // 63mm in meters - average human IPD
+                this.AVERAGE_FACE_WIDTH = 0.14; // 140mm in meters - average human face width
+                this.CAMERA_FOV_RADIANS = (50 * Math.PI) / 180; // Convert FOV to radians
+                this.realWorldFaceScale = 1.0;
+                
+                // Smoothing factor
+                this.smoothingFactor = 0.3;
+                this.smoothedExpressions = {};
+                this.smoothedPosition = { x: 0, y: 0, z: 0 };
+                this.smoothedRotation = { x: 0, y: 0, z: 0 };
+                this.smoothedScale = 1.0;
+                
+                // FACE LOCK SYSTEM
+                this.faceLockInitialized = false;
+                this.faceLockCenter = { x: 0.5, y: 0.5, z: 0 };
+                this.framesSinceLastFace = 0;
+                this.maxFramesWithoutFace = 30; // Reset lock after 30 frames without face
+                
+                this.init();
+            }
+            
+            async init() {
+                try {
+                    document.getElementById('statusText').textContent = 'Initializing...';
+                    
+                    await this.setupCamera();
+                    await this.setupThreeJS();
+                    await this.setupFaceDetection();
+                    
+                    this.startTracking();
+                    this.setupResizeHandler();
+                    this.setupFileHandler();
+                    
+                    document.getElementById('statusText').textContent = 'Ready - Select Model';
+                    
+                } catch (error) {
+                    console.error('Initialization failed:', error);
+                    document.getElementById('statusText').textContent = 'Error: ' + error.message;
+                }
+            }
+            
+            async setupCamera() {
+                const configs = [
+                    { video: { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 } } },
+                    { video: { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 } } },
+                    { video: { facingMode: 'user' } }
+                ];
+
+                for (const config of configs) {
+                    try {
+                        const stream = await navigator.mediaDevices.getUserMedia(config);
+                        this.video.srcObject = stream;
+                        
+                        await new Promise((resolve, reject) => {
+                            this.video.onloadedmetadata = () => {
+                                this.videoAspect = this.video.videoWidth / this.video.videoHeight;
+                                resolve();
+                            };
+                            this.video.onerror = reject;
+                            setTimeout(() => reject(new Error('Video timeout')), 10000);
+                        });
+                        
+                        await this.video.play();
+                        console.log('Camera setup successful');
+                        return;
+                        
+                    } catch (error) {
+                        console.warn('Camera config failed:', error);
+                    }
+                }
+                
+                throw new Error('Camera setup failed');
+            }
+            
+            async setupThreeJS() {
+                this.scene = new THREE.Scene();
+                
+                this.threeCamera = new THREE.PerspectiveCamera(
+                    50, // FOV that matches typical face tracking
+                    window.innerWidth / window.innerHeight,
+                    0.1,
+                    10
+                );
+                this.threeCamera.position.set(0, 0, 3); // Fixed camera position for stable face lock
+                
+                this.renderer = new THREE.WebGLRenderer({
+                    canvas: this.webglCanvas,
+                    alpha: true,
+                    antialias: true
+                });
+                
+                this.renderer.setSize(window.innerWidth, window.innerHeight);
+                this.renderer.setClearColor(0x000000, 0);
+                
+                // Enable advanced blending for better face integration
+                this.renderer.sortObjects = false;
+                this.renderer.autoClear = false;
+                
+                // Enhanced lighting for better face integration
+                const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+                this.scene.add(ambientLight);
+                
+                const keyLight = new THREE.DirectionalLight(0xffffff, 0.8);
+                keyLight.position.set(0, 0, 2);
+                keyLight.castShadow = false;
+                this.scene.add(keyLight);
+                
+                const fillLight = new THREE.DirectionalLight(0xffffff, 0.3);
+                fillLight.position.set(-1, 0, 1);
+                this.scene.add(fillLight);
+                
+                const rimLight = new THREE.DirectionalLight(0xffffff, 0.2);
+                rimLight.position.set(1, 0, -1);
+                this.scene.add(rimLight);
+                
+                // CREATE BLENDING LAYER for better face integration
+                this.createBlendingLayer();
+                
+                this.ktx2Loader.setTranscoderPath('https://unpkg.com/three@0.157.0/examples/jsm/libs/basis/');
+                this.ktx2Loader.detectSupport(this.renderer);
+                this.gltfLoader.setKTX2Loader(this.ktx2Loader);
+                this.gltfLoader.setMeshoptDecoder(MeshoptDecoder);
+                
+                console.log('Three.js setup complete with blending layer');
+            }
+            
+            // IMPROVED: Better blending layer for seamless face integration
+            createBlendingLayer() {
+                // Create a face-shaped mask that matches the main model better
+                const blendGeometry = new THREE.SphereGeometry(0.16, 32, 32); // Slightly larger than main model
+                blendGeometry.scale(0.85, 0.95, 0.65); // Match face proportions
+                
+                // Enhanced blending material
+                const blendMaterial = new THREE.MeshLambertMaterial({
+                    color: 0xFFDBB5, // Match skin tone
+                    transparent: true,
+                    opacity: 0.2, // Subtle but visible
+                    blending: THREE.MultiplyBlending, // Better blending mode
+                    depthWrite: false, // Don't interfere with main model
+                    depthTest: true,
+                    side: THREE.DoubleSide
+                });
+                
+                this.blendingLayer = new THREE.Mesh(blendGeometry, blendMaterial);
+                this.blendingLayer.name = 'blendingLayer';
+                this.blendingLayer.renderOrder = 0; // Render first
+                
+                console.log('Enhanced blending layer created');
+            }
+            
+            createBuiltInFaceModel() {
+                return new Promise((resolve) => {
+                    const group = new THREE.Group();
+                    
+                    // FACE POSITIONING FIX: Larger base geometry for proper face coverage
+                    const faceGeometry = new THREE.SphereGeometry(0.15, 32, 32); // Increased from 0.1
+                    faceGeometry.scale(0.8, 0.9, 0.6); // Better proportions
+                    
+                    const morphTargetNames = [
+                        'browInnerUp', 'browDown_L', 'browDown_R', 'browOuterUp_L', 'browOuterUp_R',
+                        'eyeLookUp_L', 'eyeLookUp_R', 'eyeLookDown_L', 'eyeLookDown_R',
+                        'eyeLookIn_L', 'eyeLookIn_R', 'eyeLookOut_L', 'eyeLookOut_R',
+                        'eyeBlink_L', 'eyeBlink_R', 'eyeSquint_L', 'eyeSquint_R',
+                        'eyeWide_L', 'eyeWide_R', 'cheekPuff', 'cheekSquint_L', 'cheekSquint_R',
+                        'noseSneer_L', 'noseSneer_R', 'jawOpen', 'jawForward', 'jawLeft', 'jawRight',
+                        'mouthFunnel', 'mouthPucker', 'mouthLeft', 'mouthRight',
+                        'mouthRollUpper', 'mouthRollLower', 'mouthShrugUpper', 'mouthShrugLower',
+                        'mouthClose', 'mouthSmile_L', 'mouthSmile_R', 'mouthFrown_L', 'mouthFrown_R',
+                        'mouthDimple_L', 'mouthDimple_R', 'mouthUpperUp_L', 'mouthUpperUp_R',
+                        'mouthLowerDown_L', 'mouthLowerDown_R', 'mouthPress_L', 'mouthPress_R',
+                        'mouthStretch_L', 'mouthStretch_R', 'tongueOut'
+                    ];
+                    
+                    faceGeometry.morphAttributes = {};
+                    faceGeometry.morphAttributes.position = [];
+                    
+                    morphTargetNames.forEach((name, index) => {
+                        const morphGeometry = faceGeometry.clone();
+                        this.applyMorphDeformation(morphGeometry, name);
+                        const morphAttribute = new THREE.Float32BufferAttribute(
+                            morphGeometry.attributes.position.array, 3
+                        );
+                        faceGeometry.morphAttributes.position.push(morphAttribute);
+                    });
+                    
+                    // ENHANCED: Better material for proper face integration
+                    const faceMaterial = new THREE.MeshLambertMaterial({
+                        color: 0xFFDBB5,
+                        morphTargets: true,
+                        transparent: true,
+                        opacity: 0.9, // Less transparent for better visibility
+                        blending: THREE.NormalBlending,
+                        side: THREE.DoubleSide,
+                        depthWrite: true,
+                        depthTest: true
+                    });
+                    
+                    const faceMesh = new THREE.Mesh(faceGeometry, faceMaterial);
+                    faceMesh.renderOrder = 1;
+                    
+                    faceMesh.morphTargetDictionary = {};
+                    morphTargetNames.forEach((name, index) => {
+                        faceMesh.morphTargetDictionary[name] = index;
+                    });
+                    
+                    faceMesh.morphTargetInfluences = new Array(morphTargetNames.length).fill(0);
+                    
+                    group.add(faceMesh);
+                    
+                    const gltf = {
+                        scene: group,
+                        scenes: [group]
+                    };
+                    
+                    console.log('Created built-in model with', morphTargetNames.length, 'morph targets');
+                    resolve(gltf);
+                });
+            }
+            
+            applyMorphDeformation(geometry, morphName) {
+                const positions = geometry.attributes.position.array;
+                const vertexCount = positions.length / 3;
+                
+                for (let i = 0; i < vertexCount; i++) {
+                    const x = positions[i * 3];
+                    const y = positions[i * 3 + 1];
+                    const z = positions[i * 3 + 2];
+                    
+                    if (morphName.includes('eyeBlink')) {
+                        if (y > 0.02 && y < 0.15 && Math.abs(x) < 0.2 && z > 0.2) {
+                            positions[i * 3 + 1] *= 0.1;
+                        }
+                    } else if (morphName.includes('jawOpen')) {
+                        if (y < -0.1 && z > 0.1) {
+                            positions[i * 3 + 1] -= 0.08;
+                        }
+                    } else if (morphName.includes('mouthSmile')) {
+                        if (y > -0.15 && y < 0.05 && Math.abs(x) < 0.15 && z > 0.3) {
+                            positions[i * 3 + 1] += 0.04;
+                            if (morphName.includes('_L') && x < 0) {
+                                positions[i * 3] -= 0.03;
+                            } else if (morphName.includes('_R') && x > 0) {
+                                positions[i * 3] += 0.03;
+                            }
+                        }
+                    } else if (morphName.includes('browInnerUp')) {
+                        if (y > 0.2 && Math.abs(x) < 0.1 && z > 0.2) {
+                            positions[i * 3 + 1] += 0.06;
+                        }
+                    } else if (morphName.includes('cheekPuff')) {
+                        if (Math.abs(y) < 0.1 && Math.abs(x) > 0.08 && Math.abs(x) < 0.25 && z > 0.15) {
+                            positions[i * 3 + 2] += 0.04;
+                        }
+                    }
+                }
+                
+                geometry.attributes.position.needsUpdate = true;
+            }
+            
+            async loadGLBModelModern(url) {
+                return new Promise((resolve, reject) => {
+                    document.getElementById('modelStatus').textContent = 'Loading GLB...';
+                    
+                    this.gltfLoader.load(
+                        url,
+                        (gltf) => {
+                            console.log('GLB loaded:', gltf);
+                            resolve(gltf);
+                        },
+                        (progress) => {
+                            if (progress.total > 0) {
+                                const percent = Math.round((progress.loaded / progress.total) * 100);
+                                document.getElementById('modelStatus').textContent = `Loading GLB... ${percent}%`;
+                            }
+                        },
+                        (error) => {
+                            console.error('GLB loading failed:', error);
+                            reject(error);
+                        }
+                    );
+                });
+            }
+            
+            setupFileHandler() {
+                const fileInput = document.getElementById('fileInput');
+                fileInput.addEventListener('change', async (event) => {
+                    const file = event.target.files[0];
+                    if (file) {
+                        try {
+                            const url = URL.createObjectURL(file);
+                            const gltf = await this.loadGLBModelModern(url);
+                            this.setupLoadedModel(gltf, 'Uploaded GLB');
+                            URL.revokeObjectURL(url);
+                        } catch (error) {
+                            console.error('File upload failed:', error);
+                            document.getElementById('modelStatus').textContent = 'Upload Failed ❌';
+                        }
+                    }
+                });
+            }
+            
+            setupLoadedModel(gltf, modelType) {
+                this.faceModel = gltf.scene;
+                
+                let faceMeshFound = false;
+                
+                this.faceModel.traverse((child) => {
+                    if (child.isMesh && child.morphTargetDictionary) {
+                        this.faceMeshObject = child;
+                        this.morphTargetNames = Object.keys(child.morphTargetDictionary);
+                        faceMeshFound = true;
+                        
+                        child.material.morphTargets = true;
+                        child.material.needsUpdate = true;
+                        console.log('Found face mesh with morph targets:', this.morphTargetNames);
+                    }
+                });
+                
+                if (faceMeshFound) {
+                    this.initializeExpressions();
+                    document.getElementById('expressionCount').textContent = this.morphTargetNames.length;
+                    document.getElementById('modelStatus').textContent = `${modelType} Loaded ✓`;
+                    document.getElementById('modelStatus').style.color = '#4CAF50';
+                } else {
+                    document.getElementById('modelStatus').textContent = `${modelType} - No Morph Targets`;
+                    document.getElementById('modelStatus').style.color = '#ff9800';
+                }
+                
+                const box = new THREE.Box3().setFromObject(this.faceModel);
+                const size = box.getSize(new THREE.Vector3());
+                const maxDim = Math.max(size.x, size.y, size.z);
+                
+                // FACE POSITIONING FIX: Center model on face, not bottom
+                const baseScale = 0.4; // Increased for better visibility
+                this.faceModel.scale.setScalar(baseScale);
+                
+                console.log(`${modelType} setup complete:`, {
+                    morphTargets: this.morphTargetNames.length,
+                    baseScale: baseScale,
+                    overlayMode: 'Face Tracking Overlay',
+                    originalSize: size
+                });
+            }
+            
+            initializeExpressions() {
+                this.morphTargetNames.forEach(name => {
+                    this.expressions[name] = 0;
+                    this.smoothedExpressions[name] = 0;
+                });
+            }
+        
+            async setupFaceDetection() {
+                try {
+                    const { FaceLandmarker, FilesetResolver } = await import('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest');
+                    
+                    const filesetResolver = await FilesetResolver.forVisionTasks(
+                        "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm"
+                    );
+                    
+                    this.faceLandmarker = await FaceLandmarker.createFromOptions(filesetResolver, {
+                        baseOptions: {
+                            modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task',
+                            delegate: "GPU"
+                        },
+                        outputFaceBlendshapes: true,
+                        outputFacialTransformationMatrixes: true,
+                        runningMode: "VIDEO",
+                        numFaces: 1
+                    });
+                    
+                    console.log('Face Landmarker initialized successfully');
+                    this.startVideoProcessing();
+                    
+                } catch (error) {
+                    console.error('Face Landmarker initialization failed:', error);
+                    throw new Error('Face Landmarker setup failed: ' + error.message);
+                }
+            }
+
+            startVideoProcessing() {
+                const processVideoFrame = () => {
+                    if (this.video.readyState >= 2 && !this.isProcessing) {
+                        this.processFrame();
+                    }
+                    requestAnimationFrame(processVideoFrame);
+                };
+                
+                processVideoFrame();
+                console.log('Video processing started');
+            }
+
+            async processFrame() {
+                if (this.isProcessing || !this.faceLandmarker) return;
+                
+                this.isProcessing = true;
+                try {
+                    const startTimeMs = performance.now();
+                    const results = await this.faceLandmarker.detectForVideo(this.video, startTimeMs);
+                    this.onFaceResults(results);
+                } catch (error) {
+                    console.error('Face detection error:', error);
+                } finally {
+                    this.isProcessing = false;
+                }
+            }
+            
+            onFaceResults(results) {
+                this.faces = results.faceLandmarks || [];
+                this.faceBlendshapes = results.faceBlendshapes || [];
+                
+                const faceDetected = this.faces.length > 0;
+                document.getElementById('faceDetected').textContent = faceDetected ? 'Yes' : 'No';
+                document.getElementById('faceDetected').style.color = faceDetected ? '#4CAF50' : '#f44336';
+                
+                if (faceDetected && this.faceModel && this.faceMeshObject) {
+                    // FACE LOCK: Initialize face lock on first detection
+                    if (!this.faceLockInitialized) {
+                        this.initializeFaceLock();
+                    }
+                    
+                    this.framesSinceLastFace = 0; // Reset counter
+                    this.calculateExpressionsFromBlendshapes();
+                    this.updateFaceTrackingFromLandmarks();
+                    this.renderFaceModel();
+                    this.updateExpressionDebug();
+                } else {
+                    // FACE LOCK: Handle face loss
+                    this.framesSinceLastFace++;
+                    if (this.framesSinceLastFace > this.maxFramesWithoutFace) {
+                        this.faceLockInitialized = false; // Reset lock if face lost for too long
+                    }
+                    
+                    this.clearScene();
+                    document.getElementById('expressionValues').textContent = 'No face detected';
+                }
+            }
+            
+            // NEW: Initialize face lock system
+            initializeFaceLock() {
+                if (this.faces.length === 0) return;
+                
+                const landmarks = this.faces[0];
+                const FACE_OVAL = [10, 338, 297, 332, 284, 251, 389, 356, 454, 323, 361, 288, 397, 365, 379, 378, 400, 377, 152, 148, 176, 149, 150, 136, 172, 58, 132, 93, 234, 127, 162, 21, 54, 103, 67, 109];
+                
+                // Calculate initial face center for lock reference
+                let centerX = 0, centerY = 0, centerZ = 0;
+                let validPoints = 0;
+                
+                FACE_OVAL.forEach(idx => {
+                    if (landmarks[idx]) {
+                        centerX += landmarks[idx].x;
+                        centerY += landmarks[idx].y;
+                        centerZ += landmarks[idx].z;
+                        validPoints++;
+                    }
+                });
+                
+                if (validPoints > 0) {
+                    this.faceLockCenter = {
+                        x: centerX / validPoints,
+                        y: centerY / validPoints,
+                        z: centerZ / validPoints
+                    };
+                    
+                    // Initialize smoothed values to lock center
+                    this.smoothedPosition = { ...this.faceLockCenter };
+                    this.faceLockInitialized = true;
+                    
+                    console.log('Face lock initialized at:', this.faceLockCenter);
+                }
+            }
+
+            // FIXED: Proper coordinate system handling
+            updateFaceTrackingFromLandmarks() {
+                if (this.faces.length === 0) return;
+                
+                const landmarks = this.faces[0];
+                
+                // Key facial landmarks (MediaPipe 478-point model)
+                //  FACE_OVAL = [10, 338, 297, 332, 284, 251, 389, 356, 454, 323, 361, 288, 397, 365, 379, 378, 400, 377, 152, 148, 176, 149, 150, 136, 172, 58, 132, 93, 234, 127, 162, 21, 54, 103, 67, 109];
+                //  LEFT_EYE = [33, 7, 163, 144, 145, 153, 154, 155, 133, 173, 157, 158, 159, 160, 161, 246];
+                //  RIGHT_EYE = [362, 382, 381, 380, 374, 373, 390, 249, 263, 466, 388, 387, 386, 385, 384, 398];
+                //  NOSE_TIP = [1];
+                //  FOREHEAD = [10, 151];
+                //  CHIN = [175];
+                
+                // FACE CENTER FIX: Calculate center using key facial features for proper positioning
+                const FACE_OVAL = [10, 338, 297, 332, 284, 251, 389, 356, 454, 323, 361, 288, 397, 365, 379, 378, 400, 377, 152, 148, 176, 149, 150, 136, 172, 58, 132, 93, 234, 127, 162, 21, 54, 103, 67, 109];
+                const LEFT_EYE = [33, 7, 163, 144, 145, 153, 154, 155, 133, 173, 157, 158, 159, 160, 161, 246];
+                const RIGHT_EYE = [362, 382, 381, 380, 374, 373, 390, 249, 263, 466, 388, 387, 386, 385, 384, 398];
+                const NOSE_TIP = [1];
+                const FOREHEAD = [10, 151];
+                const CHIN = [175];
+                
+                // Calculate face center using eye line and nose for better positioning
+                const leftEyeCenter = this.getAveragePoint(landmarks, LEFT_EYE);
+                const rightEyeCenter = this.getAveragePoint(landmarks, RIGHT_EYE);
+                const noseTip = landmarks[NOSE_TIP[0]];
+                
+                if (leftEyeCenter && rightEyeCenter && noseTip) {
+                    // Use eye midpoint and nose tip to get better face center
+                    const eyeMidpoint = {
+                        x: (leftEyeCenter.x + rightEyeCenter.x) / 2,
+                        y: (leftEyeCenter.y + rightEyeCenter.y) / 2,
+                        z: (leftEyeCenter.z + rightEyeCenter.z) / 2
+                    };
+                    
+                    // Face center should be slightly below eye line for natural positioning
+                    this.faceCenter = {
+                        x: eyeMidpoint.x,
+                        y: eyeMidpoint.y + 0.03, // Slightly below eyes for better face coverage
+                        z: (eyeMidpoint.z + noseTip.z) / 2 // Average depth
+                    };
+                } else {
+                    // Fallback to face oval center
+                    let centerX = 0, centerY = 0, centerZ = 0;
+                    let validPoints = 0;
+                    
+                    FACE_OVAL.forEach(idx => {
+                        if (landmarks[idx]) {
+                            centerX += landmarks[idx].x;
+                            centerY += landmarks[idx].y;
+                            centerZ += landmarks[idx].z;
+                            validPoints++;
+                        }
+                    });
+                    
+                    if (validPoints > 0) {
+                        this.faceCenter = {
+                            x: centerX / validPoints,
+                            y: centerY / validPoints,
+                            z: centerZ / validPoints
+                        };
+                    }
+                }
+                
+                // Calculate face scale using eye distance
+                //  leftEyeCenter = this.getAveragePoint(landmarks, LEFT_EYE);
+                //  rightEyeCenter = this.getAveragePoint(landmarks, RIGHT_EYE);
+                
+                if (leftEyeCenter && rightEyeCenter) {
+                    const eyeDistance = Math.sqrt(
+                        Math.pow(rightEyeCenter.x - leftEyeCenter.x, 2) + 
+                        Math.pow(rightEyeCenter.y - leftEyeCenter.y, 2)
+                    );
+                    
+                    // REAL-WORLD SIZE CALIBRATION
+                    // Calculate the real-world scale based on interpupillary distance
+                    this.calculateRealWorldScale(eyeDistance, this.faceCenter.z);
+                }
+                
+                // FIXED: Proper head rotation calculation
+                if (landmarks[NOSE_TIP[0]] && leftEyeCenter && rightEyeCenter && landmarks[FOREHEAD[0]] && landmarks[CHIN[0]]) {
+                    const noseTip = landmarks[NOSE_TIP[0]];
+                    const forehead = landmarks[FOREHEAD[0]];
+                    const chin = landmarks[CHIN[0]];
+                    
+                    const eyeMidpoint = {
+                        x: (leftEyeCenter.x + rightEyeCenter.x) / 2,
+                        y: (leftEyeCenter.y + rightEyeCenter.y) / 2,
+                        z: (leftEyeCenter.z + rightEyeCenter.z) / 2
+                    };
+                    
+                    // FIXED: Correct rotation calculations
+                    // Roll (head tilt) - mirror corrected
+                    const roll = -Math.atan2(rightEyeCenter.y - leftEyeCenter.y, rightEyeCenter.x - leftEyeCenter.x);
+                    
+                    // FIXED: Pitch (head up/down) - use proper Y coordinate difference
+                    const pitch = Math.atan2(noseTip.y - eyeMidpoint.y, Math.abs(noseTip.z - eyeMidpoint.z) + 0.01) * 1.5;
+                    
+                    // FIXED: Yaw (head left/right) - mirror corrected and proper Z handling
+                    const yaw = Math.atan2(noseTip.x - eyeMidpoint.x, Math.abs(noseTip.z - eyeMidpoint.z) + 0.01) * 1.5;
+                    
+                    const targetRotation = { x: pitch, y: yaw, z: roll };
+                    
+                    // Apply smoothing with appropriate factors
+                    const rotationSmoothing = 0.4;
+                    this.smoothedRotation.x = this.smoothedRotation.x * (1 - rotationSmoothing) + 
+                                            targetRotation.x * rotationSmoothing;
+                    this.smoothedRotation.y = this.smoothedRotation.y * (1 - rotationSmoothing) + 
+                                            targetRotation.y * rotationSmoothing;
+                    this.smoothedRotation.z = this.smoothedRotation.z * (1 - rotationSmoothing) + 
+                                            targetRotation.z * rotationSmoothing;
+                    
+                    this.headRotation = this.smoothedRotation;
+                }
+                
+                // FACE LOCK: Much stronger position smoothing to reduce floating
+                const positionSmoothing = 0.8; // Increased from 0.6 for more stability
+                this.smoothedPosition.x = this.smoothedPosition.x * (1 - positionSmoothing) + 
+                                        this.faceCenter.x * positionSmoothing;
+                this.smoothedPosition.y = this.smoothedPosition.y * (1 - positionSmoothing) + 
+                                        this.faceCenter.y * positionSmoothing;
+                this.smoothedPosition.z = this.smoothedPosition.z * (1 - positionSmoothing) + 
+                                        this.faceCenter.z * positionSmoothing;
+                
+                // FACE LOCK: Stronger scale smoothing for stable attachment
+                const scaleSmoothing = 0.7; // Increased smoothing for scale
+                this.smoothedScale = this.smoothedScale * (1 - scaleSmoothing) + 
+                                this.realWorldFaceScale * scaleSmoothing;
+            }
+
+            // FACE ATTACHMENT FIX: Better scaling for proper size
+            calculateRealWorldScale(eyeDistanceNormalized, faceDepthZ) {
+                // Increase base scale for better visibility
+                this.realWorldFaceScale = eyeDistanceNormalized * 2.5; // Increased from 1.2
+                
+                // Better bounds for proper face-sized model
+                this.realWorldFaceScale = Math.max(0.3, Math.min(0.8, this.realWorldFaceScale));
+            }
+
+            // Helper method to calculate average point from landmark indices
+            getAveragePoint(landmarks, indices) {
+                let x = 0, y = 0, z = 0, count = 0;
+                
+                indices.forEach(idx => {
+                    if (landmarks[idx]) {
+                        x += landmarks[idx].x;
+                        y += landmarks[idx].y;
+                        z += landmarks[idx].z;
+                        count++;
+                    }
+                });
+                
+                return count > 0 ? { x: x/count, y: y/count, z: z/count } : null;
+            }
+            
+            calculateExpressionsFromBlendshapes() {
+                if (this.faceBlendshapes.length === 0) return;
+                
+                const blendshapes = this.faceBlendshapes[0].categories;
+                
+                // COMPLETE MediaPipe blendshape mapping (all available expressions)
+                const blendshapeMap = {
+                    // Eyebrow expressions
+                    'browInnerUp': 'browInnerUp',
+                    'browDownLeft': 'browDown_L',
+                    'browDownRight': 'browDown_R',
+                    'browOuterUpLeft': 'browOuterUp_L',
+                    'browOuterUpRight': 'browOuterUp_R',
+                    
+                    // Eye expressions
+                    'eyeBlinkLeft': 'eyeBlink_L',
+                    'eyeBlinkRight': 'eyeBlink_R',
+                    'eyeSquintLeft': 'eyeSquint_L',
+                    'eyeSquintRight': 'eyeSquint_R',
+                    'eyeWideLeft': 'eyeWide_L',
+                    'eyeWideRight': 'eyeWide_R',
+                    'eyeLookUpLeft': 'eyeLookUp_L',
+                    'eyeLookUpRight': 'eyeLookUp_R',
+                    'eyeLookDownLeft': 'eyeLookDown_L',
+                    'eyeLookDownRight': 'eyeLookDown_R',
+                    'eyeLookInLeft': 'eyeLookIn_L',
+                    'eyeLookInRight': 'eyeLookIn_R',
+                    'eyeLookOutLeft': 'eyeLookOut_L',
+                    'eyeLookOutRight': 'eyeLookOut_R',
+                    
+                    // Cheek expressions
+                    'cheekPuff': 'cheekPuff',
+                    'cheekSquintLeft': 'cheekSquint_L',
+                    'cheekSquintRight': 'cheekSquint_R',
+                    
+                    // Nose expressions
+                    'noseSneerLeft': 'noseSneer_L',
+                    'noseSneerRight': 'noseSneer_R',
+                    
+                    // Jaw expressions
+                    'jawOpen': 'jawOpen',
+                    'jawForward': 'jawForward',
+                    'jawLeft': 'jawLeft',
+                    'jawRight': 'jawRight',
+                    
+                    // Mouth expressions (complete set)
+                    'mouthFunnel': 'mouthFunnel',
+                    'mouthPucker': 'mouthPucker',
+                    'mouthLeft': 'mouthLeft',
+                    'mouthRight': 'mouthRight',
+                    'mouthRollUpper': 'mouthRollUpper',
+                    'mouthRollLower': 'mouthRollLower',
+                    'mouthShrugUpper': 'mouthShrugUpper',
+                    'mouthShrugLower': 'mouthShrugLower',
+                    'mouthClose': 'mouthClose',
+                    'mouthSmileLeft': 'mouthSmile_L',
+                    'mouthSmileRight': 'mouthSmile_R',
+                    'mouthFrownLeft': 'mouthFrown_L',
+                    'mouthFrownRight': 'mouthFrown_R',
+                    'mouthDimpleLeft': 'mouthDimple_L',
+                    'mouthDimpleRight': 'mouthDimple_R',
+                    'mouthUpperUpLeft': 'mouthUpperUp_L',
+                    'mouthUpperUpRight': 'mouthUpperUp_R',
+                    'mouthLowerDownLeft': 'mouthLowerDown_L',
+                    'mouthLowerDownRight': 'mouthLowerDown_R',
+                    'mouthPressLeft': 'mouthPress_L',
+                    'mouthPressRight': 'mouthPress_R',
+                    'mouthStretchLeft': 'mouthStretch_L',
+                    'mouthStretchRight': 'mouthStretch_R',
+                    
+                    // Additional expressions
+                    'tongueOut': 'tongueOut'
+                };
+                
+                // Clear previous expressions
+                Object.keys(this.expressions).forEach(key => {
+                    this.expressions[key] = 0;
+                });
+                
+                // Map ALL available blendshapes to expressions
+                blendshapes.forEach(blendshape => {
+                    const mappedName = blendshapeMap[blendshape.categoryName];
+                    if (mappedName) {
+                        // Enhanced expression mapping with value adjustments
+                        let expressionValue = blendshape.score;
+                        
+                        // Apply expression-specific adjustments for better visual results
+                        if (blendshape.categoryName.includes('eyeBlink')) {
+                            expressionValue = Math.pow(expressionValue, 0.8); // Softer blink curve
+                        } else if (blendshape.categoryName.includes('mouthSmile')) {
+                            expressionValue = Math.pow(expressionValue, 1.2); // More pronounced smile
+                        } else if (blendshape.categoryName.includes('jawOpen')) {
+                            expressionValue = Math.pow(expressionValue, 0.9); // Smoother jaw opening
+                        }
+                        
+                        this.expressions[mappedName] = expressionValue;
+                    }
+                });
+                
+                // Enhanced smoothing with expression-specific factors
+                Object.keys(this.expressions).forEach(key => {
+                    const target = Math.max(0, Math.min(1, this.expressions[key]));
+                    
+                    // Different smoothing factors for different expression types
+                    let smoothingFactor = this.smoothingFactor;
+                    if (key.includes('eyeBlink')) {
+                        smoothingFactor = 0.2; // Faster response for blinks
+                    } else if (key.includes('jawOpen')) {
+                        smoothingFactor = 0.4; // Medium response for jaw
+                    } else if (key.includes('mouthSmile') || key.includes('mouthFrown')) {
+                        smoothingFactor = 0.35; // Medium-fast response for mouth expressions
+                    }
+                    
+                    this.smoothedExpressions[key] = 
+                        this.smoothedExpressions[key] * (1 - smoothingFactor) + 
+                        target * smoothingFactor;
+                });
+            }
+            
+            renderFaceModel() {
+                if (!this.faceModel || !this.renderer) return;
+                
+                // Clear previous render
+                this.renderer.clear();
+                
+                // Remove previous models
+                if (this.scene.getObjectByName('faceModel')) {
+                    this.scene.remove(this.scene.getObjectByName('faceModel'));
+                }
+                if (this.scene.getObjectByName('blendingLayer')) {
+                    this.scene.remove(this.scene.getObjectByName('blendingLayer'));
+                }
+                
+                const modelInstance = this.faceModel.clone();
+                modelInstance.name = 'faceModel';
+                
+                // FIXED: Proper coordinate conversion for position
+                const position = this.convertToWorldCoords(this.smoothedPosition);
+                modelInstance.position.set(position.x, position.y, position.z); 
+                
+                // FIXED: Apply head rotation with proper coordinate system
+                modelInstance.rotation.set(
+                    this.headRotation.x - Math.PI/4,     // Pitch
+                    this.headRotation.y,     // Yaw  
+                    this.headRotation.z      // Roll
+                );
+                
+                // FACE POSITIONING FIX: Better scale bounds for proper face size
+                const finalScale = Math.max(0.2, Math.min(0.7, this.smoothedScale)); // Much better size range
+                modelInstance.scale.setScalar(finalScale);
+                
+                // ENHANCED: Add blending layer for better integration
+                if (this.blendingLayer) {
+                    const blendingInstance = this.blendingLayer.clone();
+                    blendingInstance.name = 'blendingLayer';
+                    blendingInstance.position.copy(modelInstance.position);
+                    blendingInstance.rotation.copy(modelInstance.rotation);
+                    blendingInstance.scale.setScalar(finalScale * 1.1); // Slightly larger than main model
+                    
+                    this.scene.add(blendingInstance);
+                }
+                
+                // Apply morph target expressions
+                if (this.faceMeshObject && this.morphTargetNames.length > 0) {
+                    const faceMesh = this.findFaceMesh(modelInstance);
+                    if (faceMesh && faceMesh.morphTargetInfluences) {
+                        this.morphTargetNames.forEach((name, index) => {
+                            if (this.smoothedExpressions[name] !== undefined) {
+                                faceMesh.morphTargetInfluences[index] = this.smoothedExpressions[name];
+                            }
+                        });
+                    }
+                }
+                
+                this.scene.add(modelInstance);
+                
+                // Render with proper layering
+                this.renderer.render(this.scene, this.threeCamera);
+                
+                // Update sync info
+                const activeExpressions = Object.values(this.smoothedExpressions).filter(v => v > 0.1).length;
+                document.getElementById('syncInfo').textContent = 
+                    `Scale: ${finalScale.toFixed(2)}, Active: ${activeExpressions} expressions`;
+            }
+            
+            findFaceMesh(object) {
+                let faceMesh = null;
+                object.traverse((child) => {
+                    if (child.isMesh && child.morphTargetDictionary && Object.keys(child.morphTargetDictionary).length > 0) {
+                        faceMesh = child;
+                    }
+                });
+                return faceMesh;
+            }
+            
+            updateExpressionDebug() {
+                const activeExpressions = Object.entries(this.smoothedExpressions)
+                    .filter(([name, value]) => value > 0.05)
+                    .sort(([,a], [,b]) => b - a)
+                    .slice(0, 15)
+                    .map(([name, value]) => `${name}: ${value.toFixed(2)}`)
+                    .join('<br>');
+                
+                const debugElement = document.getElementById('expressionValues');
+                if (activeExpressions) {
+                    debugElement.innerHTML = activeExpressions + 
+                        `<br><br><strong>Position:</strong><br>X: ${this.smoothedPosition.x.toFixed(3)}<br>Y: ${this.smoothedPosition.y.toFixed(3)}<br>Z: ${this.smoothedPosition.z.toFixed(3)}` +
+                        `<br><br><strong>Rotation:</strong><br>Pitch: ${(this.headRotation.x * 180/Math.PI).toFixed(1)}°<br>Yaw: ${(this.headRotation.y * 180/Math.PI).toFixed(1)}°<br>Roll: ${(this.headRotation.z * 180/Math.PI).toFixed(1)}°` +
+                        `<br><br><strong>Scale:</strong> ${this.smoothedScale.toFixed(2)}`;
+                } else {
+                    debugElement.innerHTML = 'No active expressions';
+                }
+            }
+            
+            // FACE ATTACHMENT FIX: Precise face-locked coordinate conversion
+            convertToWorldCoords(facePos) {
+                // Convert MediaPipe normalized coordinates directly to Three.js world space
+                // MediaPipe coordinates: (0,0) = top-left, (1,1) = bottom-right
+                // Three.js world space: (-1,-1) = bottom-left, (1,1) = top-right
+                
+                // Direct coordinate mapping for perfect face lock
+                const worldX = (facePos.x - 0.5) * 2.0;  // Convert 0-1 to -1 to 1
+                const worldY = -(facePos.y - 0.5) * 2.0; // Flip Y and convert 0-1 to -1 to 1
+                
+                // Keep model exactly at face depth - no floating!
+                const worldZ = 0.0; // Exactly at the screen plane
+                
+                return {
+                    x: worldX,
+                    y: worldY, 
+                    z: worldZ
+                };
+            }
+            
+            clearScene() {
+                if (this.scene.getObjectByName('faceModel')) {
+                    this.scene.remove(this.scene.getObjectByName('faceModel'));
+                }
+                if (this.scene.getObjectByName('blendingLayer')) {
+                    this.scene.remove(this.scene.getObjectByName('blendingLayer'));
+                }
+                if (this.renderer) {
+                    this.renderer.clear();
+                    this.renderer.render(this.scene, this.threeCamera);
+                }
+            }
+            
+            startTracking() {
+                console.log('Face tracking started with Face Landmarker');
+            }
+            
+            setupResizeHandler() {
+                window.addEventListener('resize', () => {
+                    this.threeCamera.aspect = window.innerWidth / window.innerHeight;
+                    this.threeCamera.updateProjectionMatrix();
+                    this.renderer.setSize(window.innerWidth, window.innerHeight);
+                    console.log('Resized to:', window.innerWidth, 'x', window.innerHeight);
+                });
+            }
+            
+            cleanup() {
+                if (this.faceLandmarker) this.faceLandmarker.close();
+                if (this.renderer) this.renderer.dispose();
+                if (this.video.srcObject) {
+                    this.video.srcObject.getTracks().forEach(track => track.stop());
+                }
+            }
+        }
+        
+        // Global functions for buttons
+        let tracker;
+        
+        window.loadBuiltInModel = async function() {
+            if (!tracker) return;
+            try {
+                document.getElementById('modelStatus').textContent = 'Creating Built-in Model...';
+                const gltf = await tracker.createBuiltInFaceModel();
+                tracker.setupLoadedModel(gltf, 'Built-in Face Model');
+            } catch (error) {
+                console.error('Built-in model failed:', error);
+                document.getElementById('modelStatus').textContent = 'Built-in Model Failed ❌';
+            }
+        };
+        
+        window.loadGLBModel = async function() {
+            if (!tracker) return;
+            try {
+                const gltf = await tracker.loadGLBModelModern('face.glb');
+                tracker.setupLoadedModel(gltf, 'GLB Model');
+            } catch (error) {
+                console.error('GLB loading failed:', error);
+                document.getElementById('modelStatus').textContent = 'GLB Load Failed ❌';
+                document.getElementById('modelStatus').style.color = '#ff6b6b';
+            }
+        };
+        
+        window.loadFromURL = function() {
+            const url = prompt('Enter GLB/GLTF URL:');
+            if (url && tracker) {
+                tracker.loadGLBModelModern(url)
+                    .then(gltf => tracker.setupLoadedModel(gltf, 'URL Model'))
+                    .catch(error => {
+                        console.error('URL loading failed:', error);
+                        document.getElementById('modelStatus').textContent = 'URL Load Failed ❌';
+                    });
+            }
+        };
+        
+        // Initialize the tracker
+        window.addEventListener('load', async () => {
+            try {
+                tracker = new ModernFaceTracker();
+            } catch (error) {
+                console.error('Failed to initialize tracker:', error);
+                document.getElementById('statusText').textContent = 'Failed: ' + error.message;
+            }
+        });
+        
+        window.addEventListener('beforeunload', () => {
+            if (tracker) tracker.cleanup();
+        });
+        
+        document.addEventListener('visibilitychange', () => {
+            if (!tracker) return;
+            
+            if (document.hidden) {
+                if (tracker.camera) tracker.camera.stop();
+            } else {
+                if (tracker.camera) tracker.camera.start();
+            }
+        });
+    </script>
+</body>
+</html>
