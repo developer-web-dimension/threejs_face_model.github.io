@@ -167,6 +167,7 @@
     </script>
     
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest"></script>
+    <script src="https://unpkg.com/three@0.157.0/build/three.min.js"></script>
     
     <script type="module">
         import * as THREE from 'three';
@@ -218,6 +219,8 @@
                 this.smoothedPosition = { x: 0, y: 0, z: 0 };
                 this.smoothedRotation = { x: 0, y: 0, z: 0 };
                 this.smoothedScale = 1.0;
+
+                this.baselineScale = null;
                 
                 // SINGLE MODEL MANAGEMENT
                 this.currentPivotGroup = null; // Track current pivot group
@@ -744,12 +747,11 @@
             }
 
             updatePersistentModel() {
-                if (this.isRendering) return; // Prevent render conflicts
+                if (this.isRendering) return; 
                 
-                // Initialize if not done yet
                 if (!this.modelInitialized) {
                     this.initializePersistentModel();
-                    if (!this.modelInitialized) return; // Failed to initialize
+                    if (!this.modelInitialized) return; 
                 }
                 
                 this.isRendering = true;
@@ -759,11 +761,21 @@
                     const facePosition = this.convertToWorldCoords(this.smoothedPosition);
                     this.persistentPivotGroup.position.set(facePosition.x, facePosition.y, facePosition.z);
                     
-                    // Update pivot rotation (head tracking)
+                    // FIXED: Clear any existing rotations first
+                    this.persistentPivotGroup.rotation.set(0, 0, 0);
+                    
+                    // FIXED: Apply pitch and yaw to the pivot group (for head turning)
                     this.persistentPivotGroup.rotation.set(
-                        this.headRotation.x - Math.PI/4,
-                        this.headRotation.y,
-                        this.headRotation.z
+                        this.headRotation.x ,  // Pitch (head up/down)
+                        this.headRotation.y,              // Yaw (head left/right)
+                        0                                 // No roll on pivot group
+                    );
+                    
+                    // FIXED: Apply roll (tilt) directly to the model for natural head tilt
+                    this.persistentFaceModel.rotation.set(
+                        0,                                // No additional pitch on model
+                        0,                                // No additional yaw on model
+                        this.headRotation.z               // Roll (head tilt) applied to model
                     );
                     
                     // Update scale
@@ -772,9 +784,15 @@
                     
                     if (this.persistentBlendingLayer) {
                         this.persistentBlendingLayer.scale.setScalar(finalScale * 1.1);
+                        // Apply same roll rotation to blending layer
+                        this.persistentBlendingLayer.rotation.set(
+                            0,                            // No pitch
+                            0,                            // No yaw
+                            this.headRotation.z           // Same roll as main model
+                        );
                     }
                     
-                    // Update morph target expressions
+                    // Update morph target expressions (keep existing code)
                     if (this.faceMeshObject && this.morphTargetNames.length > 0) {
                         const faceMesh = this.findFaceMesh(this.persistentFaceModel);
                         if (faceMesh && faceMesh.morphTargetInfluences) {
@@ -796,7 +814,7 @@
                     // Update sync info
                     const activeExpressions = Object.values(this.smoothedExpressions).filter(v => v > 0.1).length;
                     document.getElementById('syncInfo').textContent = 
-                        `Scale: ${finalScale.toFixed(2)}, Active: ${activeExpressions}, Persistent Model`;
+                        `Scale: ${finalScale.toFixed(2)}, Active: ${activeExpressions}, Tilt: ${(this.headRotation.z * 180/Math.PI).toFixed(1)}°`;
                         
                 } catch (error) {
                     console.error('Error updating persistent model:', error);
@@ -805,6 +823,7 @@
                 }
             }
 
+            
             hidePersistentModel() {
                 if (this.persistentPivotGroup) {
                     this.persistentPivotGroup.visible = false;
@@ -818,36 +837,157 @@
             }
 
 
-
             onFaceResults(results) {
                 // FORCE SINGLE FACE: Only use the first detected face
                 this.faces = results.faceLandmarks && results.faceLandmarks.length > 0 ? [results.faceLandmarks[0]] : [];
                 this.faceBlendshapes = results.faceBlendshapes && results.faceBlendshapes.length > 0 ? [results.faceBlendshapes[0]] : [];
+                
+                // NEW: Extract transformation matrix for better head rotation
+                this.facialTransformationMatrix = results.facialTransformationMatrixes && results.facialTransformationMatrixes.length > 0 ? results.facialTransformationMatrixes[0] : null;
                 
                 const faceDetected = this.faces.length > 0;
                 document.getElementById('faceDetected').textContent = faceDetected ? 'Yes (1)' : 'No';
                 document.getElementById('faceDetected').style.color = faceDetected ? '#4CAF50' : '#f44336';
                 
                 if (faceDetected && this.faceModel && this.faceMeshObject) {
-                    // FACE LOCK: Initialize face lock on first detection
                     if (!this.faceLockInitialized) {
                         this.initializeFaceLock();
                     }
                     
                     this.framesSinceLastFace = 0;
                     this.calculateExpressionsFromBlendshapes();
-                    this.updateFaceTrackingFromLandmarks();
-                    this.updatePersistentModel(); // NEW: Update existing model instead of recreating
+                    
+                    // NEW: Use transformation matrix for head rotation if available
+                    if (this.facialTransformationMatrix) {
+                        this.updateHeadRotationFromMatrix();
+                    } else {
+                        this.updateFaceTrackingFromLandmarks(); // Fallback to your existing method
+                    }
+                    
+                    this.updatePersistentModel();
                     this.updateExpressionDebug();
                 } else {
                     this.framesSinceLastFace++;
                     if (this.framesSinceLastFace > this.maxFramesWithoutFace) {
                         this.faceLockInitialized = false;
-                        this.hidePersistentModel(); // Hide instead of destroying
+                        this.hidePersistentModel();
                     }
                     document.getElementById('expressionValues').textContent = 'No face detected';
                 }
             }
+
+            updateExpressionDebug() {
+                const activeExpressions = Object.entries(this.smoothedExpressions)
+                    .filter(([name, value]) => value > 0.05)
+                    .sort(([,a], [,b]) => b - a)
+                    .slice(0, 15)
+                    .map(([name, value]) => `${name}: ${value.toFixed(2)}`)
+                    .join('<br>');
+                
+                const debugElement = document.getElementById('expressionValues');
+                const rotationSource = this.facialTransformationMatrix ? 'Matrix' : 'Landmarks';
+                
+                if (activeExpressions) {
+                    debugElement.innerHTML = activeExpressions + 
+                        `<br><br><strong>Position:</strong><br>X: ${this.smoothedPosition.x.toFixed(3)}<br>Y: ${this.smoothedPosition.y.toFixed(3)}<br>Z: ${this.smoothedPosition.z.toFixed(3)}` +
+                        `<br><br><strong>Rotation (${rotationSource}):</strong><br>Pitch: ${(this.headRotation.x * 180/Math.PI).toFixed(1)}°<br>Yaw: ${(this.headRotation.y * 180/Math.PI).toFixed(1)}°<br>Roll: ${(this.headRotation.z * 180/Math.PI).toFixed(1)}°` +
+                        `<br><br><strong>Scale:</strong> ${this.smoothedScale.toFixed(2)}`;
+                } else {
+                    debugElement.innerHTML = 'No active expressions';
+                }
+            }
+
+
+            updateHeadRotationFromMatrix() {
+                if (!this.facialTransformationMatrix) return;
+                
+                // Create THREE.js Matrix4 from MediaPipe transformation matrix
+                const matrix = new THREE.Matrix4().fromArray(this.facialTransformationMatrix.data);
+                
+                // Extract rotation as Euler angles
+                const matrixRotation = new THREE.Euler().setFromRotationMatrix(matrix);
+                
+                // ENHANCED: Apply coordinate system corrections for your setup
+                const targetRotation = {
+                    x: matrixRotation.x,      // Pitch - inverted for correct direction
+                    y: matrixRotation.y,       // Yaw - direct mapping
+                    z: matrixRotation.z       // Roll - inverted for correct direction
+                };
+                
+                // IMPROVED: Enhanced smoothing for matrix-based rotation
+                const rotationSmoothing = 0.3; // Faster response since matrix data is more stable
+                const rollSmoothing = 0.25;    // Even faster for roll since it's more direct
+                
+                this.smoothedRotation.x = this.smoothedRotation.x * (1 - rotationSmoothing) + 
+                                        targetRotation.x * rotationSmoothing;
+                this.smoothedRotation.y = this.smoothedRotation.y * (1 - rotationSmoothing) + 
+                                        targetRotation.y * rotationSmoothing;
+                this.smoothedRotation.z = this.smoothedRotation.z * (1 - rollSmoothing) + 
+                                        targetRotation.z * rollSmoothing;
+                
+                this.headRotation = this.smoothedRotation;
+                
+                // KEEP your existing face position tracking
+                this.updateFacePositionFromLandmarks();
+                
+                console.log('Using matrix-based head rotation:', {
+                    pitch: (this.headRotation.x * 180/Math.PI).toFixed(1),
+                    yaw: (this.headRotation.y * 180/Math.PI).toFixed(1),
+                    roll: (this.headRotation.z * 180/Math.PI).toFixed(1)
+                });
+            }
+
+            updateFacePositionFromLandmarks() {
+                if (this.faces.length === 0) return;
+                
+                const landmarks = this.faces[0];
+                
+                // KEEP your existing face center calculation
+                const LEFT_EYE = [33, 7, 163, 144, 145, 153, 154, 155, 133, 173, 157, 158, 159, 160, 161, 246];
+                const RIGHT_EYE = [362, 382, 381, 380, 374, 373, 390, 249, 263, 466, 388, 387, 386, 385, 384, 398];
+                const NOSE_TIP = [1];
+                
+                const leftEyeCenter = this.getAveragePoint(landmarks, LEFT_EYE);
+                const rightEyeCenter = this.getAveragePoint(landmarks, RIGHT_EYE);
+                const noseTip = landmarks[NOSE_TIP[0]];
+                
+                if (leftEyeCenter && rightEyeCenter && noseTip) {
+                    const eyeMidpoint = {
+                        x: (leftEyeCenter.x + rightEyeCenter.x) / 2,
+                        y: (leftEyeCenter.y + rightEyeCenter.y) / 2,
+                        z: (leftEyeCenter.z + rightEyeCenter.z) / 2
+                    };
+                    
+                    this.faceCenter = {
+                        x: eyeMidpoint.x,
+                        y: eyeMidpoint.y + 0.03,
+                        z: (eyeMidpoint.z + noseTip.z) / 2
+                    };
+                    
+                    // Calculate face scale
+                    const eyeDistance = Math.sqrt(
+                        Math.pow(rightEyeCenter.x - leftEyeCenter.x, 2) + 
+                        Math.pow(rightEyeCenter.y - leftEyeCenter.y, 2)
+                    );
+                    this.calculateRealWorldScale(eyeDistance, this.faceCenter.z);
+                }
+                
+                // KEEP your existing position smoothing
+                const positionSmoothing = 0.8;
+                this.smoothedPosition.x = this.smoothedPosition.x * (1 - positionSmoothing) + 
+                                        this.faceCenter.x * positionSmoothing;
+                this.smoothedPosition.y = this.smoothedPosition.y * (1 - positionSmoothing) + 
+                                        this.faceCenter.y * positionSmoothing;
+                this.smoothedPosition.z = this.smoothedPosition.z * (1 - positionSmoothing) + 
+                                        this.faceCenter.z * positionSmoothing;
+                
+                const scaleSmoothing = 0.9;
+                this.smoothedScale = this.smoothedScale * (1 - scaleSmoothing) + 
+                                    this.realWorldFaceScale * scaleSmoothing;
+            }
+
+
+
             
             // NEW: Initialize face lock system
             initializeFaceLock() {
@@ -982,13 +1122,15 @@
                     
                     // Apply smoothing with appropriate factors
                     const rotationSmoothing = 0.4;
+                    const rollSmoothing = 0.3; // Slightly faster response for head tilt
+
                     this.smoothedRotation.x = this.smoothedRotation.x * (1 - rotationSmoothing) + 
                                             targetRotation.x * rotationSmoothing;
                     this.smoothedRotation.y = this.smoothedRotation.y * (1 - rotationSmoothing) + 
                                             targetRotation.y * rotationSmoothing;
-                    this.smoothedRotation.z = this.smoothedRotation.z * (1 - rotationSmoothing) + 
-                                            targetRotation.z * rotationSmoothing;
-                    
+                    this.smoothedRotation.z = this.smoothedRotation.z * (1 - rollSmoothing) + 
+                                            targetRotation.z * rollSmoothing; // Faster roll response
+
                     this.headRotation = this.smoothedRotation;
                 }
                 
@@ -1007,14 +1149,24 @@
                                 this.realWorldFaceScale * scaleSmoothing;
             }
 
-            // FACE ATTACHMENT FIX: Better scaling for proper size
+
             calculateRealWorldScale(eyeDistanceNormalized, faceDepthZ) {
-                // Increase base scale for better visibility
-                this.realWorldFaceScale = eyeDistanceNormalized * 2.5; // Increased from 1.2
+                if (!this.baselineScale) {
+                    this.baselineScale = eyeDistanceNormalized * 2.5;
+                    this.baselineScale = Math.max(0.3, Math.min(0.8, this.baselineScale));
+                }
                 
-                // Better bounds for proper face-sized model
-                this.realWorldFaceScale = Math.max(0.3, Math.min(0.8, this.realWorldFaceScale));
+                const currentScale = eyeDistanceNormalized * 2.5;
+                const scaleRatio = currentScale / this.baselineScale;
+                
+                if (scaleRatio > 1.3 || scaleRatio < 0.7) {
+                    this.realWorldFaceScale = Math.max(0.3, Math.min(0.8, currentScale));
+                    this.baselineScale = this.realWorldFaceScale;
+                } else {
+                    this.realWorldFaceScale = this.baselineScale;
+                }
             }
+
 
             // Helper method to calculate average point from landmark indices
             getAveragePoint(landmarks, indices) {
@@ -1032,122 +1184,45 @@
                 return count > 0 ? { x: x/count, y: y/count, z: z/count } : null;
             }
             
+
             calculateExpressionsFromBlendshapes() {
                 if (this.faceBlendshapes.length === 0) return;
                 
                 const blendshapes = this.faceBlendshapes[0].categories;
                 
-                // COMPLETE MediaPipe blendshape mapping (all available expressions)
-                const blendshapeMap = {
-                    // Eyebrow expressions
-                    'browInnerUp': 'browInnerUp',
-                    'browDownLeft': 'browDown_L',
-                    'browDownRight': 'browDown_R',
-                    'browOuterUpLeft': 'browOuterUp_L',
-                    'browOuterUpRight': 'browOuterUp_R',
-                    
-                    // Eye expressions
-                    'eyeBlinkLeft': 'eyeBlink_L',
-                    'eyeBlinkRight': 'eyeBlink_R',
-                    'eyeSquintLeft': 'eyeSquint_L',
-                    'eyeSquintRight': 'eyeSquint_R',
-                    'eyeWideLeft': 'eyeWide_L',
-                    'eyeWideRight': 'eyeWide_R',
-                    'eyeLookUpLeft': 'eyeLookUp_L',
-                    'eyeLookUpRight': 'eyeLookUp_R',
-                    'eyeLookDownLeft': 'eyeLookDown_L',
-                    'eyeLookDownRight': 'eyeLookDown_R',
-                    'eyeLookInLeft': 'eyeLookIn_L',
-                    'eyeLookInRight': 'eyeLookIn_R',
-                    'eyeLookOutLeft': 'eyeLookOut_L',
-                    'eyeLookOutRight': 'eyeLookOut_R',
-                    
-                    // Cheek expressions
-                    'cheekPuff': 'cheekPuff',
-                    'cheekSquintLeft': 'cheekSquint_L',
-                    'cheekSquintRight': 'cheekSquint_R',
-                    
-                    // Nose expressions
-                    'noseSneerLeft': 'noseSneer_L',
-                    'noseSneerRight': 'noseSneer_R',
-                    
-                    // Jaw expressions
-                    'jawOpen': 'jawOpen',
-                    'jawForward': 'jawForward',
-                    'jawLeft': 'jawLeft',
-                    'jawRight': 'jawRight',
-                    
-                    // Mouth expressions (complete set)
-                    'mouthFunnel': 'mouthFunnel',
-                    'mouthPucker': 'mouthPucker',
-                    'mouthLeft': 'mouthLeft',
-                    'mouthRight': 'mouthRight',
-                    'mouthRollUpper': 'mouthRollUpper',
-                    'mouthRollLower': 'mouthRollLower',
-                    'mouthShrugUpper': 'mouthShrugUpper',
-                    'mouthShrugLower': 'mouthShrugLower',
-                    'mouthClose': 'mouthClose',
-                    'mouthSmileLeft': 'mouthSmile_L',
-                    'mouthSmileRight': 'mouthSmile_R',
-                    'mouthFrownLeft': 'mouthFrown_L',
-                    'mouthFrownRight': 'mouthFrown_R',
-                    'mouthDimpleLeft': 'mouthDimple_L',
-                    'mouthDimpleRight': 'mouthDimple_R',
-                    'mouthUpperUpLeft': 'mouthUpperUp_L',
-                    'mouthUpperUpRight': 'mouthUpperUp_R',
-                    'mouthLowerDownLeft': 'mouthLowerDown_L',
-                    'mouthLowerDownRight': 'mouthLowerDown_R',
-                    'mouthPressLeft': 'mouthPress_L',
-                    'mouthPressRight': 'mouthPress_R',
-                    'mouthStretchLeft': 'mouthStretch_L',
-                    'mouthStretchRight': 'mouthStretch_R',
-                    
-                    // Additional expressions
-                    'tongueOut': 'tongueOut'
-                };
-                
-                // Clear previous expressions
+                // IMPROVED: Direct mapping like in React code (more efficient)
                 Object.keys(this.expressions).forEach(key => {
                     this.expressions[key] = 0;
                 });
                 
-                // Map ALL available blendshapes to expressions
+                // MORE EFFICIENT: Direct application without complex mapping
                 blendshapes.forEach(blendshape => {
-                    const mappedName = blendshapeMap[blendshape.categoryName];
-                    if (mappedName) {
-                        // Enhanced expression mapping with value adjustments
+                    const categoryName = blendshape.categoryName;
+                    let mappedName = null;
+                    
+                    // SIMPLIFIED mapping based on React code pattern
+                    if (categoryName.includes('eyeBlink')) {
+                        mappedName = categoryName.replace('eyeBlink', 'eyeBlink_').replace('Left', 'L').replace('Right', 'R');
+                    } else if (categoryName.includes('mouthSmile')) {
+                        mappedName = categoryName.replace('mouthSmile', 'mouthSmile_').replace('Left', 'L').replace('Right', 'R');
+                    } else if (categoryName.includes('jaw')) {
+                        mappedName = categoryName;
+                    }
+                    // Add more mappings as needed based on your morph target names
+                    
+                    if (mappedName && this.expressions.hasOwnProperty(mappedName)) {
                         let expressionValue = blendshape.score;
                         
-                        // Apply expression-specific adjustments for better visual results
-                        if (blendshape.categoryName.includes('eyeBlink')) {
-                            expressionValue = Math.pow(expressionValue, 0.8); // Softer blink curve
-                        } else if (blendshape.categoryName.includes('mouthSmile')) {
-                            expressionValue = Math.pow(expressionValue, 1.2); // More pronounced smile
-                        } else if (blendshape.categoryName.includes('jawOpen')) {
-                            expressionValue = Math.pow(expressionValue, 0.9); // Smoother jaw opening
+                        // Apply smoothing directly
+                        let smoothingFactor = 0.3;
+                        if (categoryName.includes('eyeBlink')) {
+                            smoothingFactor = 0.2;
                         }
                         
-                        this.expressions[mappedName] = expressionValue;
+                        this.smoothedExpressions[mappedName] = 
+                            this.smoothedExpressions[mappedName] * (1 - smoothingFactor) + 
+                            expressionValue * smoothingFactor;
                     }
-                });
-                
-                // Enhanced smoothing with expression-specific factors
-                Object.keys(this.expressions).forEach(key => {
-                    const target = Math.max(0, Math.min(1, this.expressions[key]));
-                    
-                    // Different smoothing factors for different expression types
-                    let smoothingFactor = this.smoothingFactor;
-                    if (key.includes('eyeBlink')) {
-                        smoothingFactor = 0.2; // Faster response for blinks
-                    } else if (key.includes('jawOpen')) {
-                        smoothingFactor = 0.4; // Medium response for jaw
-                    } else if (key.includes('mouthSmile') || key.includes('mouthFrown')) {
-                        smoothingFactor = 0.35; // Medium-fast response for mouth expressions
-                    }
-                    
-                    this.smoothedExpressions[key] = 
-                        this.smoothedExpressions[key] * (1 - smoothingFactor) + 
-                        target * smoothingFactor;
                 });
             }
 
@@ -1169,24 +1244,30 @@
                 const pivotGroup = new THREE.Group();
                 pivotGroup.name = 'facePivot';
                 
-                // Set pivot position to the face position (this becomes our rotation center)
+                // Set pivot position to the face position
                 const facePosition = this.convertToWorldCoords(this.smoothedPosition);
                 pivotGroup.position.set(facePosition.x, facePosition.y, facePosition.z);
                 
-                // Apply rotations to the pivot group (rotates around face position)
+                // FIXED: Apply pitch and yaw to pivot group (for head turning)
                 pivotGroup.rotation.set(
                     this.headRotation.x - Math.PI/4,     // Pitch
                     this.headRotation.y,                 // Yaw  
-                    this.headRotation.z                  // Roll
+                    0                                    // No roll on pivot
                 );
                 
                 // Clone the model and add it to pivot group
                 const modelInstance = this.faceModel.clone();
                 modelInstance.name = 'faceModel';
                 
-                // IMPORTANT: Position model at origin relative to pivot (0,0,0)
-                // This makes it rotate around the pivot point (face position) instead of its own center
+                // Position model at origin relative to pivot
                 modelInstance.position.set(0, 0, 0);
+                
+                // FIXED: Apply roll (tilt) directly to the model
+                modelInstance.rotation.set(
+                    0,                                   // No additional pitch
+                    0,                                   // No additional yaw
+                    this.headRotation.z                  // Roll (head tilt)
+                );
                 
                 // Apply scale to the model
                 const finalScale = Math.max(0.2, Math.min(0.7, this.smoothedScale));
@@ -1195,20 +1276,27 @@
                 // Add model to pivot group
                 pivotGroup.add(modelInstance);
                 
-                // ENHANCED: Add blending layer with same pivot system
+                // ENHANCED: Add blending layer with same rotation system
                 if (this.blendingLayer) {
                     const blendingInstance = this.blendingLayer.clone();
                     blendingInstance.name = 'blendingLayer';
                     
                     // Position blending layer at origin relative to pivot
                     blendingInstance.position.set(0, 0, 0);
-                    blendingInstance.rotation.set(0, 0, 0); // No additional rotation
+                    
+                    // Apply same roll rotation to blending layer
+                    blendingInstance.rotation.set(
+                        0,                               // No pitch
+                        0,                               // No yaw
+                        this.headRotation.z              // Same roll as main model
+                    );
+                    
                     blendingInstance.scale.setScalar(finalScale * 1.1);
                     
                     pivotGroup.add(blendingInstance);
                 }
                 
-                // Apply morph target expressions
+                // Apply morph target expressions (keep existing code)
                 if (this.faceMeshObject && this.morphTargetNames.length > 0) {
                     const faceMesh = this.findFaceMesh(modelInstance);
                     if (faceMesh && faceMesh.morphTargetInfluences) {
@@ -1229,8 +1317,9 @@
                 // Update sync info
                 const activeExpressions = Object.values(this.smoothedExpressions).filter(v => v > 0.1).length;
                 document.getElementById('syncInfo').textContent = 
-                    `Scale: ${finalScale.toFixed(2)}, Active: ${activeExpressions} expressions, Pivot: ON`;
+                    `Scale: ${finalScale.toFixed(2)}, Active: ${activeExpressions}, Tilt: ${(this.headRotation.z * 180/Math.PI).toFixed(1)}°`;
             }
+
             
             findFaceMesh(object) {
                 let faceMesh = null;
