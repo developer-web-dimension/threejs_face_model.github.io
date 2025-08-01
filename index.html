@@ -119,6 +119,17 @@
             <div class="status-item">Sync: <span id="syncInfo">Ready</span></div>
         </div>
         
+        <div id="modelOptions">
+            <div><strong>Model Options:</strong></div>
+            <button onclick="loadBuiltInModel()">Use Built-in Face Model</button>
+            <button onclick="loadGLBModel()">Try GLB Model</button>
+            <button onclick="loadFromURL()">Load from URL</button>
+            <div style="margin-top: 10px;">
+                <input type="file" id="fileInput" accept=".glb,.gltf" style="display:none;">
+                <button onclick="document.getElementById('fileInput').click()">Upload GLB File</button>
+            </div>
+        </div>
+        
     </div>
 
     <script type="importmap">
@@ -171,10 +182,10 @@
                 this.videoAspect = 1;
                 this.canvasAspect = 1;
                 
-                // Real-world face size calibration
-                this.AVERAGE_INTERPUPILLARY_DISTANCE = 0.063;
-                this.AVERAGE_FACE_WIDTH = 0.14;
-                this.CAMERA_FOV_RADIANS = (50 * Math.PI) / 180;
+                // REAL-WORLD FACE SIZE CALIBRATION
+                this.AVERAGE_INTERPUPILLARY_DISTANCE = 0.063; // 63mm in meters - average human IPD
+                this.AVERAGE_FACE_WIDTH = 0.14; // 140mm in meters - average human face width
+                this.CAMERA_FOV_RADIANS = (50 * Math.PI) / 180; // Convert FOV to radians
                 this.realWorldFaceScale = 1.0;
                 
                 // Smoothing factor
@@ -183,17 +194,20 @@
                 this.smoothedPosition = { x: 0, y: 0, z: 0 };
                 this.smoothedRotation = { x: 0, y: 0, z: 0 };
                 this.smoothedScale = 1.0;
+
                 this.baselineScale = null;
                 
-                // Single model management
-                this.currentPivotGroup = null;
-                this.lastModelUpdate = 0;
+                // SINGLE MODEL MANAGEMENT
+                this.currentPivotGroup = null; // Track current pivot group
+                // this.modelUpdateCounter = 0;   // Prevent rapid updates
+                this.lastModelUpdate = 0;      // Timestamp of last update
+                // this.MODEL_UPDATE_INTERVAL = 16; // Minimum ms between updates (60fps)
 
-                // Face lock system
+                // FACE LOCK SYSTEM
                 this.faceLockInitialized = false;
                 this.faceLockCenter = { x: 0.5, y: 0.5, z: 0 };
                 this.framesSinceLastFace = 0;
-                this.maxFramesWithoutFace = 30;
+                this.maxFramesWithoutFace = 30; // Reset lock after 30 frames without face
                 
                 this.init();
             }
@@ -206,14 +220,13 @@
                     await this.setupThreeJS();
                     await this.setupFaceDetection();
                     
+                    await this.autoLoadGLBModel();
+
                     this.startTracking();
                     this.setupResizeHandler();
-                    // this.setupFileHandler();
-
-                    await this.autoLoadFaceModel();
-
+                    this.setupFileHandler();
                     
-                    document.getElementById('statusText').textContent = 'Ready - Select Model';
+                    document.getElementById('statusText').textContent = 'Ready';
                     
                 } catch (error) {
                     console.error('Initialization failed:', error);
@@ -221,62 +234,37 @@
                 }
             }
 
-            async autoLoadFaceModel() {
+            async autoLoadGLBModel() {
                 try {
-                    document.getElementById('modelStatus').textContent = 'Loading Face Model...';
+                    document.getElementById('modelStatus').textContent = 'Loading GLB Model...';
                     
-                    // Try to load your actual face model file
-                    const modelURL = 'face.glb'; // Change this to your actual model path
-                    
+                    // First try to load the GLB model
                     try {
-                        const gltf = await this.loadGLBModelModern(modelURL);
-                        this.setupLoadedModel(gltf, 'Face Model');
-                        
-                        document.getElementById('modelStatus').textContent = 'Face Model Loaded ✓';
-                        document.getElementById('modelStatus').style.color = '#4CAF50';
-                        
-                        console.log('Face model loaded successfully');
-                        
+                        const gltf = await this.loadGLBModelModern('face.glb');
+                        this.setupLoadedModel(gltf, 'GLB Model');
+                        console.log('GLB model auto-loaded successfully');
+                        return; // Exit if GLB loads successfully
                     } catch (error) {
-                        console.error('GLB loading failed, trying alternative methods:', error);
-                        
-                        // Fallback: Create a proper face geometry (not a ball)
-                        const gltf = await this.createProperFaceModel();
-                        this.setupLoadedModel(gltf, 'Procedural Face Model');
-                        
-                        document.getElementById('modelStatus').textContent = 'Procedural Face Loaded ✓';
-                        document.getElementById('modelStatus').style.color = '#4CAF50';
+                        console.warn('GLB auto-load failed, trying built-in model:', error);
+                    }
+                    
+                    // Fallback to built-in model if GLB fails
+                    try {
+                        document.getElementById('modelStatus').textContent = 'Creating Built-in Model...';
+                        const gltf = await this.createBuiltInFaceModel();
+                        this.setupLoadedModel(gltf, 'Built-in Face Model');
+                        console.log('Built-in model loaded as fallback');
+                    } catch (error) {
+                        console.error('Built-in model also failed:', error);
+                        document.getElementById('modelStatus').textContent = 'Model Load Failed ❌';
+                        document.getElementById('modelStatus').style.color = '#ff6b6b';
                     }
                     
                 } catch (error) {
-                    console.error('All face model loading failed:', error);
-                    document.getElementById('modelStatus').textContent = 'Face Load Failed ❌';
+                    console.error('Auto-load failed:', error);
+                    document.getElementById('modelStatus').textContent = 'Auto-load Failed ❌';
                     document.getElementById('modelStatus').style.color = '#ff6b6b';
                 }
-            }
-
-            async loadGLBModelModern(url) {
-                return new Promise((resolve, reject) => {
-                    document.getElementById('modelStatus').textContent = 'Loading GLB...';
-                    
-                    this.gltfLoader.load(
-                        url,
-                        (gltf) => {
-                            console.log('GLB loaded:', gltf);
-                            resolve(gltf);
-                        },
-                        (progress) => {
-                            if (progress.total > 0) {
-                                const percent = Math.round((progress.loaded / progress.total) * 100);
-                                document.getElementById('modelStatus').textContent = `Loading GLB... ${percent}%`;
-                            }
-                        },
-                        (error) => {
-                            console.error('GLB loading failed:', error);
-                            reject(error);
-                        }
-                    );
-                });
             }
 
             
@@ -389,6 +377,74 @@
                 console.log('Enhanced blending layer created');
             }
             
+            createBuiltInFaceModel() {
+                return new Promise((resolve) => {
+                    const group = new THREE.Group();
+                    
+                    // FACE POSITIONING FIX: Larger base geometry for proper face coverage
+                    const faceGeometry = new THREE.SphereGeometry(0.15, 32, 32); // Increased from 0.1
+                    faceGeometry.scale(0.8, 0.9, 0.6); // Better proportions
+                    
+                    const morphTargetNames = [
+                        'browInnerUp', 'browDown_L', 'browDown_R', 'browOuterUp_L', 'browOuterUp_R',
+                        'eyeLookUp_L', 'eyeLookUp_R', 'eyeLookDown_L', 'eyeLookDown_R',
+                        'eyeLookIn_L', 'eyeLookIn_R', 'eyeLookOut_L', 'eyeLookOut_R',
+                        'eyeBlink_L', 'eyeBlink_R', 'eyeSquint_L', 'eyeSquint_R',
+                        'eyeWide_L', 'eyeWide_R', 'cheekPuff', 'cheekSquint_L', 'cheekSquint_R',
+                        'noseSneer_L', 'noseSneer_R', 'jawOpen', 'jawForward', 'jawLeft', 'jawRight',
+                        'mouthFunnel', 'mouthPucker', 'mouthLeft', 'mouthRight',
+                        'mouthRollUpper', 'mouthRollLower', 'mouthShrugUpper', 'mouthShrugLower',
+                        'mouthClose', 'mouthSmile_L', 'mouthSmile_R', 'mouthFrown_L', 'mouthFrown_R',
+                        'mouthDimple_L', 'mouthDimple_R', 'mouthUpperUp_L', 'mouthUpperUp_R',
+                        'mouthLowerDown_L', 'mouthLowerDown_R', 'mouthPress_L', 'mouthPress_R',
+                        'mouthStretch_L', 'mouthStretch_R', 'tongueOut'
+                    ];
+                    
+                    faceGeometry.morphAttributes = {};
+                    faceGeometry.morphAttributes.position = [];
+                    
+                    morphTargetNames.forEach((name, index) => {
+                        const morphGeometry = faceGeometry.clone();
+                        this.applyMorphDeformation(morphGeometry, name);
+                        const morphAttribute = new THREE.Float32BufferAttribute(
+                            morphGeometry.attributes.position.array, 3
+                        );
+                        faceGeometry.morphAttributes.position.push(morphAttribute);
+                    });
+                    
+                    // ENHANCED: Better material for proper face integration
+                    const faceMaterial = new THREE.MeshLambertMaterial({
+                        color: 0xFFDBB5,
+                        morphTargets: true,
+                        transparent: true,
+                        opacity: 0.9, // Less transparent for better visibility
+                        blending: THREE.NormalBlending,
+                        side: THREE.DoubleSide,
+                        depthWrite: true,
+                        depthTest: true
+                    });
+                    
+                    const faceMesh = new THREE.Mesh(faceGeometry, faceMaterial);
+                    faceMesh.renderOrder = 1;
+                    
+                    faceMesh.morphTargetDictionary = {};
+                    morphTargetNames.forEach((name, index) => {
+                        faceMesh.morphTargetDictionary[name] = index;
+                    });
+                    
+                    faceMesh.morphTargetInfluences = new Array(morphTargetNames.length).fill(0);
+                    
+                    group.add(faceMesh);
+                    
+                    const gltf = {
+                        scene: group,
+                        scenes: [group]
+                    };
+                    
+                    console.log('Created built-in model with', morphTargetNames.length, 'morph targets');
+                    resolve(gltf);
+                });
+            }
             
             applyMorphDeformation(geometry, morphName) {
                 const positions = geometry.attributes.position.array;
@@ -428,6 +484,48 @@
                 }
                 
                 geometry.attributes.position.needsUpdate = true;
+            }
+            
+            async loadGLBModelModern(url) {
+                return new Promise((resolve, reject) => {
+                    document.getElementById('modelStatus').textContent = 'Loading GLB...';
+                    
+                    this.gltfLoader.load(
+                        url,
+                        (gltf) => {
+                            console.log('GLB loaded:', gltf);
+                            resolve(gltf);
+                        },
+                        (progress) => {
+                            if (progress.total > 0) {
+                                const percent = Math.round((progress.loaded / progress.total) * 100);
+                                document.getElementById('modelStatus').textContent = `Loading GLB... ${percent}%`;
+                            }
+                        },
+                        (error) => {
+                            console.error('GLB loading failed:', error);
+                            reject(error);
+                        }
+                    );
+                });
+            }
+            
+            setupFileHandler() {
+                const fileInput = document.getElementById('fileInput');
+                fileInput.addEventListener('change', async (event) => {
+                    const file = event.target.files[0];
+                    if (file) {
+                        try {
+                            const url = URL.createObjectURL(file);
+                            const gltf = await this.loadGLBModelModern(url);
+                            this.setupLoadedModel(gltf, 'Uploaded GLB');
+                            URL.revokeObjectURL(url);
+                        } catch (error) {
+                            console.error('File upload failed:', error);
+                            document.getElementById('modelStatus').textContent = 'Upload Failed ❌';
+                        }
+                    }
+                });
             }
 
             destroyPersistentModel() {
@@ -1316,16 +1414,42 @@
         
         // Global functions for buttons
         let tracker;
-
-        window.addEventListener('load', async () => {
+        
+        window.loadBuiltInModel = async function() {
+            if (!tracker) return;
             try {
-                tracker = new ModernFaceTracker();
-                // Face model will auto-load during initialization
+                document.getElementById('modelStatus').textContent = 'Creating Built-in Model...';
+                const gltf = await tracker.createBuiltInFaceModel();
+                tracker.setupLoadedModel(gltf, 'Built-in Face Model');
             } catch (error) {
-                console.error('Failed to initialize tracker:', error);
-                document.getElementById('statusText').textContent = 'Failed: ' + error.message;
+                console.error('Built-in model failed:', error);
+                document.getElementById('modelStatus').textContent = 'Built-in Model Failed ❌';
             }
-        });
+        };
+        
+        window.loadGLBModel = async function() {
+            if (!tracker) return;
+            try {
+                const gltf = await tracker.loadGLBModelModern('face.glb');
+                tracker.setupLoadedModel(gltf, 'GLB Model');
+            } catch (error) {
+                console.error('GLB loading failed:', error);
+                document.getElementById('modelStatus').textContent = 'GLB Load Failed ❌';
+                document.getElementById('modelStatus').style.color = '#ff6b6b';
+            }
+        };
+        
+        window.loadFromURL = function() {
+            const url = prompt('Enter GLB/GLTF URL:');
+            if (url && tracker) {
+                tracker.loadGLBModelModern(url)
+                    .then(gltf => tracker.setupLoadedModel(gltf, 'URL Model'))
+                    .catch(error => {
+                        console.error('URL loading failed:', error);
+                        document.getElementById('modelStatus').textContent = 'URL Load Failed ❌';
+                    });
+            }
+        };
         
         // Initialize the tracker
         window.addEventListener('load', async () => {
