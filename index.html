@@ -96,22 +96,6 @@
             background: #005a9e;
         }
         
-        #expressionDebug {
-            position: absolute;
-            top: 20px;
-            right: 20px;
-            z-index: 1000;
-            color: white;
-            background: rgba(0,0,0,0.9);
-            padding: 10px 15px;
-            border-radius: 8px;
-            font-size: 11px;
-            font-family: monospace;
-            max-height: 80vh;
-            overflow-y: auto;
-            min-width: 200px;
-        }
-        
         @media (max-width: 768px) {
             #status, #modelOptions {
                 font-size: 11px;
@@ -119,11 +103,6 @@
                 max-width: calc(50vw - 20px);
             }
             
-            #expressionDebug {
-                font-size: 10px;
-                max-width: calc(45vw - 20px);
-                max-height: 50vh;
-            }
         }
     </style>
 </head>
@@ -151,10 +130,6 @@
             </div>
         </div>
         
-        <div id="expressionDebug">
-            <div><strong>Live Expression Values:</strong></div>
-            <div id="expressionValues">No face detected</div>
-        </div>
     </div>
 
     <script type="importmap">
@@ -585,17 +560,31 @@
                     const filesetResolver = await FilesetResolver.forVisionTasks(
                         "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm"
                     );
-                    
-                    this.faceLandmarker = await FaceLandmarker.createFromOptions(filesetResolver, {
-                        baseOptions: {
-                            modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task',
-                            delegate: "GPU"
-                        },
-                        outputFaceBlendshapes: true,
-                        outputFacialTransformationMatrixes: true,
-                        runningMode: "VIDEO",
-                        numFaces: 1  // FORCE SINGLE FACE DETECTION
-                    });
+
+                    try {
+                        this.faceLandmarker = await FaceLandmarker.createFromOptions(filesetResolver, {
+                            baseOptions: {
+                                modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task',
+                                delegate: "GPU"
+                            },
+                            outputFaceBlendshapes: true,
+                            outputFacialTransformationMatrixes: true,
+                            runningMode: "VIDEO",
+                            numFaces: 1
+                        });
+                    } catch (error) {
+                        console.log("GPU failed, falling back to CPU");
+                        this.faceLandmarker = await FaceLandmarker.createFromOptions(filesetResolver, {
+                            baseOptions: {
+                                modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task',
+                                delegate: "CPU"
+                            },
+                            outputFaceBlendshapes: true,
+                            outputFacialTransformationMatrixes: true,
+                            runningMode: "VIDEO",
+                            numFaces: 1
+                        });
+                    }
                     
                     console.log('Face Landmarker initialized for SINGLE FACE');
                     this.startVideoProcessing();
@@ -930,11 +919,6 @@
                 // KEEP your existing face position tracking
                 this.updateFacePositionFromLandmarks();
                 
-                console.log('Using matrix-based head rotation:', {
-                    pitch: (this.headRotation.x * 180/Math.PI).toFixed(1),
-                    yaw: (this.headRotation.y * 180/Math.PI).toFixed(1),
-                    roll: (this.headRotation.z * 180/Math.PI).toFixed(1)
-                });
             }
 
             updateFacePositionFromLandmarks() {
@@ -985,9 +969,6 @@
                 this.smoothedScale = this.smoothedScale * (1 - scaleSmoothing) + 
                                     this.realWorldFaceScale * scaleSmoothing;
             }
-
-
-
             
             // NEW: Initialize face lock system
             initializeFaceLock() {
@@ -1081,9 +1062,7 @@
                     }
                 }
                 
-                // Calculate face scale using eye distance
-                //  leftEyeCenter = this.getAveragePoint(landmarks, LEFT_EYE);
-                //  rightEyeCenter = this.getAveragePoint(landmarks, RIGHT_EYE);
+
                 
                 if (leftEyeCenter && rightEyeCenter) {
                     const eyeDistance = Math.sqrt(
