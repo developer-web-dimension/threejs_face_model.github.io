@@ -111,24 +111,22 @@
         <video id="video" autoplay muted playsinline></video>
         <canvas id="webglCanvas"></canvas>
         
+
         <div id="status">
-            <div class="status-item">Status: <span id="statusText">Loading...</span></div>
             <div class="status-item">Model: <span id="modelStatus">Select Model Type</span></div>
             <div class="status-item">Face: <span id="faceDetected">No</span></div>
             <div class="status-item">Expressions: <span id="expressionCount">0</span></div>
             <div class="status-item">Sync: <span id="syncInfo">Ready</span></div>
-        </div>
-        
-        <div id="modelOptions">
-            <div><strong>Model Options:</strong></div>
-            <button onclick="loadBuiltInModel()">Use Built-in Face Model</button>
-            <button onclick="loadGLBModel()">Try GLB Model</button>
-            <button onclick="loadFromURL()">Load from URL</button>
-            <div style="margin-top: 10px;">
-                <input type="file" id="fileInput" accept=".glb,.gltf" style="display:none;">
-                <button onclick="document.getElementById('fileInput').click()">Upload GLB File</button>
+            <div class="status-item">
+                <details>
+                    <summary>Expression Debug</summary>
+                    <div id="expressionValues" style="font-size: 10px; max-height: 200px; overflow-y: auto;">
+                        No face detected
+                    </div>
+                </details>
             </div>
         </div>
+
         
     </div>
 
@@ -208,13 +206,19 @@
                 this.faceLockCenter = { x: 0.5, y: 0.5, z: 0 };
                 this.framesSinceLastFace = 0;
                 this.maxFramesWithoutFace = 30; // Reset lock after 30 frames without face
+
+                // Glasses system
+                this.glassesModel = null;
+                this.persistentGlasses = null;
+                this.glassesLoaded = false;
+                this.glassesScale = 1.0;
+
                 
                 this.init();
             }
             
             async init() {
                 try {
-                    document.getElementById('statusText').textContent = 'Initializing...';
                     
                     await this.setupCamera();
                     await this.setupThreeJS();
@@ -224,13 +228,11 @@
 
                     this.startTracking();
                     this.setupResizeHandler();
-                    this.setupFileHandler();
+                    // this.setupFileHandler();
                     
-                    document.getElementById('statusText').textContent = 'Ready';
                     
                 } catch (error) {
                     console.error('Initialization failed:', error);
-                    document.getElementById('statusText').textContent = 'Error: ' + error.message;
                 }
             }
 
@@ -243,6 +245,12 @@
                         const gltf = await this.loadGLBModelModern('face.glb');
                         this.setupLoadedModel(gltf, 'GLB Model');
                         console.log('GLB model auto-loaded successfully');
+
+                        try {
+                            await this.loadGlassesModel();
+                        } catch (error) {
+                            console.warn('Glasses auto-load failed:', error);
+                        }
                         return; // Exit if GLB loads successfully
                     } catch (error) {
                         console.warn('GLB auto-load failed, trying built-in model:', error);
@@ -264,6 +272,113 @@
                     console.error('Auto-load failed:', error);
                     document.getElementById('modelStatus').textContent = 'Auto-load Failed ❌';
                     document.getElementById('modelStatus').style.color = '#ff6b6b';
+                }
+            }
+
+            async loadGlassesModel() {
+                try {
+                    console.log('Attempting to load glasses model...');
+                    document.getElementById('modelStatus').textContent = 'Loading Glasses...';
+                    
+                    const gltf = await new Promise((resolve, reject) => {
+                        this.gltfLoader.load(
+                            'normal_glasses.glb',
+                            (gltf) => {
+                                console.log('Glasses loaded successfully:', gltf);
+                                resolve(gltf);
+                            },
+                            (progress) => {
+                                if (progress.total > 0) {
+                                    const percent = Math.round((progress.loaded / progress.total) * 100);
+                                    document.getElementById('modelStatus').textContent = `Loading Glasses... ${percent}%`;
+                                }
+                            },
+                            (error) => {
+                                console.error('Glasses loading failed:', error);
+                                reject(error);
+                            }
+                        );
+                    });
+                    
+                    this.glassesModel = gltf.scene;
+                    this.glassesLoaded = true;
+                    
+                    // Setup glasses properties with better materials
+                    this.glassesModel.traverse((child) => {
+                        if (child.isMesh) {
+                            child.renderOrder = 10; // Render in front of face
+                            
+                            // Ensure material is properly configured
+                            if (child.material) {
+                                child.material.transparent = true;
+                                child.material.depthTest = true;
+                                child.material.depthWrite = true;
+                                child.material.needsUpdate = true;
+                                
+                                // If opacity is too low, make it more visible
+                                if (child.material.opacity < 0.8) {
+                                    child.material.opacity = 0.9;
+                                }
+                            }
+                        }
+                    });
+                    
+                    console.log('Glasses model configured successfully');
+                    
+                    // If persistent model already exists, add glasses to it
+                    if (this.modelInitialized && this.persistentPivotGroup) {
+                        console.log('Adding glasses to existing persistent model...');
+                        
+                        // Remove old glasses if they exist
+                        const oldGlasses = this.persistentPivotGroup.getObjectByName('persistentGlasses');
+                        if (oldGlasses) {
+                            this.persistentPivotGroup.remove(oldGlasses);
+                        }
+                        
+                        // Add new glasses
+                        this.persistentGlasses = this.glassesModel.clone();
+                        this.persistentGlasses.name = 'persistentGlasses';
+                        this.persistentGlasses.position.set(0, 0.06, 0.14);
+                        this.persistentGlasses.scale.setScalar(1.0);
+                        
+                        this.persistentPivotGroup.add(this.persistentGlasses);
+                        console.log('Glasses added to existing model');
+                    }
+                    
+                    document.getElementById('modelStatus').textContent = 'Face + Glasses Loaded ✓';
+                    document.getElementById('modelStatus').style.color = '#4CAF50';
+                    
+                } catch (error) {
+                    console.error('Glasses loading failed:', error);
+                    this.glassesLoaded = false;
+                    document.getElementById('modelStatus').textContent = 'Glasses Load Failed (using face only)';
+                    document.getElementById('modelStatus').style.color = '#ff9800';
+                }
+            }
+
+
+            updateModelStatus() {
+                if (this.faceModel && this.glassesLoaded) {
+                    document.getElementById('modelStatus').textContent = 'Face + Glasses Active ✓';
+                    document.getElementById('modelStatus').style.color = '#4CAF50';
+                } else if (this.faceModel) {
+                    document.getElementById('modelStatus').textContent = 'Face Only (No Glasses) ✓';
+                    document.getElementById('modelStatus').style.color = '#ff9800';
+                }
+            }
+
+            // 6. DEBUGGING: Add glasses visibility check
+            checkGlassesVisibility() {
+                if (this.persistentGlasses) {
+                    console.log('Glasses status:', {
+                        visible: this.persistentGlasses.visible,
+                        position: this.persistentGlasses.position,
+                        scale: this.persistentGlasses.scale,
+                        parent: !!this.persistentGlasses.parent,
+                        inScene: !!this.scene.getObjectByName('persistentGlasses', true)
+                    });
+                } else {
+                    console.log('No persistent glasses found');
                 }
             }
 
@@ -536,9 +651,11 @@
                 
                 this.persistentFaceModel = null;
                 this.persistentBlendingLayer = null;
+                // DON'T destroy glasses here - keep them loaded
+                // this.persistentGlasses = null; // REMOVE THIS LINE
                 this.modelInitialized = false;
                 
-                console.log('Persistent model destroyed');
+                console.log('Persistent model destroyed, glasses preserved');
             }
 
             setupLoadedModel(gltf, modelType) {
@@ -737,6 +854,7 @@
                     `Scale: ${finalScale.toFixed(2)}, Active: ${activeExpressions}, Single Model`;
             }
 
+
             initializePersistentModel() {
                 if (this.modelInitialized || !this.faceModel) return;
                 
@@ -759,17 +877,106 @@
                     this.persistentPivotGroup.add(this.persistentBlendingLayer);
                 }
                 
-                // Add model to pivot group
+                // Add face model to pivot group
                 this.persistentPivotGroup.add(this.persistentFaceModel);
-                
+
+                // FIXED: Proper glasses positioning from the start
+                if (this.glassesLoaded && this.glassesModel) {
+                    console.log('Adding glasses to persistent model with proper orientation...');
+                    this.persistentGlasses = this.glassesModel.clone();
+                    this.persistentGlasses.name = 'persistentGlasses';
+                    
+                    // PROPER INITIAL POSITION - centered on face 
+                    this.persistentGlasses.position.set(0, 0.15, 0.20);
+                    this.persistentGlasses.scale.setScalar(1.5);
+                    
+                    // Set up materials for proper occlusion and visibility
+                    this.persistentGlasses.traverse((child) => {
+                        if (child.isMesh) {
+                            child.renderOrder = 10; // Render after face but before other elements
+                            child.material.transparent = true;
+                            child.material.opacity = 0.5;
+                            child.material.depthTest = true;
+                            child.material.depthWrite = true; // Enable real occlusion
+                            child.material.needsUpdate = true;
+                        }
+                    });
+                    
+                    this.persistentPivotGroup.add(this.persistentGlasses);
+                    console.log('Glasses successfully added with proper orientation');
+                }
+
                 // Add to scene
                 this.scene.add(this.persistentPivotGroup);
-                
-                // Mark as initialized
                 this.modelInitialized = true;
                 
-                console.log('Persistent model created and added to scene');
+                console.log('Persistent model created with glasses support');
             }
+
+
+            updateGlassesPosition() {
+                if (!this.persistentGlasses || !this.faces || this.faces.length === 0) {
+                    return;
+                }
+                
+                try {
+                    const landmarks = this.faces[0];
+                    
+                    // More precise landmarks for glasses positioning
+                    const NOSE_BRIDGE_TOP = [6, 9, 10]; // Very top of nose bridge
+                    const NOSE_BRIDGE_MID = [151, 6]; // Middle nose bridge  
+                    const LEFT_EYE_INNER = [133]; // Inner corner of left eye
+                    const RIGHT_EYE_INNER = [362]; // Inner corner of right eye
+                    const LEFT_EYE_CENTER = [33, 160, 159, 158, 157, 173]; // Left eye center points
+                    const RIGHT_EYE_CENTER = [362, 387, 386, 385, 384, 398]; // Right eye center points
+                    
+                    // Calculate precise positioning points
+                    const noseBridgeTop = this.getAveragePoint(landmarks, NOSE_BRIDGE_TOP);
+                    const noseBridgeMid = this.getAveragePoint(landmarks, NOSE_BRIDGE_MID);
+                    const leftEyeInner = landmarks[LEFT_EYE_INNER[0]];
+                    const rightEyeInner = landmarks[RIGHT_EYE_INNER[0]];
+                    const leftEyeCenter = this.getAveragePoint(landmarks, LEFT_EYE_CENTER);
+                    const rightEyeCenter = this.getAveragePoint(landmarks, RIGHT_EYE_CENTER);
+                    
+                    if (noseBridgeTop && leftEyeCenter && rightEyeCenter && leftEyeInner && rightEyeInner) {
+                        // Calculate the optimal glasses position
+                        const glassesCenter = {
+                            x: (leftEyeInner.x + rightEyeInner.x) / 2, // Center between inner eye corners
+                            y: noseBridgeTop.y - 0.010, // Slightly above nose bridge top
+                            z: noseBridgeTop.z - 0.003 // Just in front of nose bridge
+                        };
+                        
+                        // Convert to model-relative coordinates with better responsiveness
+                        const relativePos = {
+                            x: (glassesCenter.x - this.smoothedPosition.x) * 2.2,
+                            y: (glassesCenter.y - this.smoothedPosition.y) * 2.2 + 0.25, // Position at nose bridge
+                            z: 0.27 
+                        };
+                        
+                        // Very responsive tracking for glasses
+                        const smoothing = 0.2; // More responsive than before
+                        this.persistentGlasses.position.x = this.persistentGlasses.position.x * (1 - smoothing) + relativePos.x * smoothing;
+                        this.persistentGlasses.position.y = this.persistentGlasses.position.y * (1 - smoothing) + relativePos.y * smoothing;
+                        this.persistentGlasses.position.z = this.persistentGlasses.position.z * (1 - smoothing) + relativePos.z * smoothing;
+                        
+                        // Log position for debugging (less frequent)
+                        if (Math.random() < 0.01) {
+                            console.log('Glasses tracking update:', {
+                                center: glassesCenter,
+                                relative: relativePos,
+                                final: {
+                                    x: this.persistentGlasses.position.x.toFixed(3),
+                                    y: this.persistentGlasses.position.y.toFixed(3),
+                                    z: this.persistentGlasses.position.z.toFixed(3)
+                                }
+                            });
+                        }
+                    }
+                } catch (error) {
+                    console.warn('Glasses positioning error:', error);
+                }
+            }
+
 
             updatePersistentModel() {
                 if (this.isRendering) return; 
@@ -782,42 +989,47 @@
                 this.isRendering = true;
                 
                 try {
+                    const finalScale = Math.max(0.2, Math.min(0.7, this.smoothedScale));
+                    
                     // Update pivot position (face tracking)
                     const facePosition = this.convertToWorldCoords(this.smoothedPosition);
                     this.persistentPivotGroup.position.set(facePosition.x, facePosition.y, facePosition.z);
                     
-                    // FIXED: Clear any existing rotations first
+                    // Clear and apply rotations
                     this.persistentPivotGroup.rotation.set(0, 0, 0);
-                    
-                    // FIXED: Apply pitch and yaw to the pivot group (for head turning)
                     this.persistentPivotGroup.rotation.set(
-                        this.headRotation.x ,  // Pitch (head up/down)
-                        this.headRotation.y,              // Yaw (head left/right)
-                        0                                 // No roll on pivot group
+                        this.headRotation.x,
+                        this.headRotation.y,
+                        0
                     );
                     
-                    // FIXED: Apply roll (tilt) directly to the model for natural head tilt
-                    this.persistentFaceModel.rotation.set(
-                        0,                                // No additional pitch on model
-                        0,                                // No additional yaw on model
-                        this.headRotation.z               // Roll (head tilt) applied to model
-                    );
-                    
-                    // Update scale
-                    const finalScale = Math.max(0.2, Math.min(0.7, this.smoothedScale));
+                    // Apply roll to face model
+                    this.persistentFaceModel.rotation.set(0, 0, this.headRotation.z);
                     this.persistentFaceModel.scale.setScalar(finalScale);
-                    
-                    if (this.persistentBlendingLayer) {
-                        this.persistentBlendingLayer.scale.setScalar(finalScale * 1.1);
-                        // Apply same roll rotation to blending layer
-                        this.persistentBlendingLayer.rotation.set(
-                            0,                            // No pitch
-                            0,                            // No yaw
-                            this.headRotation.z           // Same roll as main model
-                        );
+
+                    // IMPROVED: Better glasses handling with proper orientation
+                    if (this.persistentGlasses) {
+                        this.persistentGlasses.visible = true;
+                        
+                        // Scale glasses proportionally with face
+                        this.persistentGlasses.scale.setScalar(finalScale * 0.8); // Slightly smaller than face
+                        
+                        // Apply same head rotation for natural movement
+                        this.persistentGlasses.rotation.set(0, 0, this.headRotation.z);
+                        
+                        // Always update position when face is detected
+                        if (this.faces.length > 0) {
+                            this.updateGlassesPosition();
+                        }
                     }
                     
-                    // Update morph target expressions (keep existing code)
+                    // Handle blending layer
+                    if (this.persistentBlendingLayer) {
+                        this.persistentBlendingLayer.scale.setScalar(finalScale * 1.1);
+                        this.persistentBlendingLayer.rotation.set(0, 0, this.headRotation.z);
+                    }
+                    
+                    // Update morph targets
                     if (this.faceMeshObject && this.morphTargetNames.length > 0) {
                         const faceMesh = this.findFaceMesh(this.persistentFaceModel);
                         if (faceMesh && faceMesh.morphTargetInfluences) {
@@ -829,17 +1041,18 @@
                         }
                     }
                     
-                    // Make sure model is visible
+                    // Make sure everything is visible
                     this.persistentPivotGroup.visible = true;
                     
-                    // Render scene
+                    // Render
                     this.renderer.clear();
                     this.renderer.render(this.scene, this.threeCamera);
                     
-                    // Update sync info
+                    // Update sync info with glasses status
                     const activeExpressions = Object.values(this.smoothedExpressions).filter(v => v > 0.1).length;
+                    const glassesIndicator = this.persistentGlasses ? '👓' : '';
                     document.getElementById('syncInfo').textContent = 
-                        `Scale: ${finalScale.toFixed(2)}, Active: ${activeExpressions}, Tilt: ${(this.headRotation.z * 180/Math.PI).toFixed(1)}°`;
+                        `Scale: ${finalScale.toFixed(2)}, Active: ${activeExpressions}, Tilt: ${(this.headRotation.z * 180/Math.PI).toFixed(1)}° ${glassesIndicator}`;
                         
                 } catch (error) {
                     console.error('Error updating persistent model:', error);
@@ -1389,6 +1602,15 @@
             startTracking() {
                 console.log('Face tracking started with Face Landmarker');
             }
+
+            adjustGlassesPosition(deltaX, deltaY, deltaZ) {
+                if (this.persistentGlasses) {
+                    this.persistentGlasses.position.x += deltaX;
+                    this.persistentGlasses.position.y += deltaY;
+                    this.persistentGlasses.position.z += deltaZ;
+                    console.log('Glasses manually adjusted to:', this.persistentGlasses.position);
+                }
+            }
             
             setupResizeHandler() {
                 window.addEventListener('resize', () => {
@@ -1414,7 +1636,61 @@
         
         // Global functions for buttons
         let tracker;
-        
+
+        window.testGlassesOrientation = function() {
+            if (tracker && tracker.persistentGlasses) {
+                console.log('=== GLASSES ORIENTATION DEBUG ===');
+                console.log('Position:', tracker.persistentGlasses.position);
+                console.log('Rotation:', tracker.persistentGlasses.rotation);
+                console.log('Scale:', tracker.persistentGlasses.scale.x);
+                console.log('Visible:', tracker.persistentGlasses.visible);
+                console.log('Parent:', tracker.persistentGlasses.parent ? tracker.persistentGlasses.parent.name : 'None');
+                
+                // Check if glasses are in the scene
+                const glassesInScene = tracker.scene.getObjectByName('persistentGlasses', true);
+                console.log('In scene:', !!glassesInScene);
+                
+                if (tracker.faces && tracker.faces.length > 0) {
+                    console.log('Face detected, tracking should be active');
+                } else {
+                    console.log('No face detected');
+                }
+            } else {
+                console.log('No glasses or tracker found');
+            }
+        };
+
+        // Quick manual positioning commands
+        window.centerGlasses = function() {
+            if (tracker && tracker.persistentGlasses) {
+                tracker.persistentGlasses.position.set(0, 0.05, 0.12);
+                console.log('Glasses centered at nose bridge position');
+            }
+        };
+
+        window.moveGlassesUp = () => adjustGlasses(0, 0.01, 0);
+        window.moveGlassesDown = () => adjustGlasses(0, -0.01, 0);
+        window.moveGlassesLeft = () => adjustGlasses(-0.01, 0, 0);
+        window.moveGlassesRight = () => adjustGlasses(0.01, 0, 0);
+        window.moveGlassesForward = () => adjustGlasses(0, 0, -0.01);
+        window.moveGlassesBack = () => adjustGlasses(0, 0, 0.01);
+
+        // Reset to proper position
+        window.resetGlassesToNose = function() {
+            if (tracker && tracker.persistentGlasses) {
+                tracker.persistentGlasses.position.set(0, 0.05, 0.12);
+                tracker.persistentGlasses.rotation.set(0, 0, 0);
+                tracker.persistentGlasses.scale.setScalar(0.7);
+                console.log('Glasses reset to nose bridge position');
+            }
+        };
+
+        // FIX 5: Add manual adjustment controls (call these from browser console for testing)
+        window.adjustGlasses = function(x, y, z) {
+            if (tracker && tracker.persistentGlasses) {
+                tracker.adjustGlassesPosition(x || 0, y || 0, z || 0);
+            }
+        };
         window.loadBuiltInModel = async function() {
             if (!tracker) return;
             try {
@@ -1426,38 +1702,13 @@
                 document.getElementById('modelStatus').textContent = 'Built-in Model Failed ❌';
             }
         };
-        
-        window.loadGLBModel = async function() {
-            if (!tracker) return;
-            try {
-                const gltf = await tracker.loadGLBModelModern('face.glb');
-                tracker.setupLoadedModel(gltf, 'GLB Model');
-            } catch (error) {
-                console.error('GLB loading failed:', error);
-                document.getElementById('modelStatus').textContent = 'GLB Load Failed ❌';
-                document.getElementById('modelStatus').style.color = '#ff6b6b';
-            }
-        };
-        
-        window.loadFromURL = function() {
-            const url = prompt('Enter GLB/GLTF URL:');
-            if (url && tracker) {
-                tracker.loadGLBModelModern(url)
-                    .then(gltf => tracker.setupLoadedModel(gltf, 'URL Model'))
-                    .catch(error => {
-                        console.error('URL loading failed:', error);
-                        document.getElementById('modelStatus').textContent = 'URL Load Failed ❌';
-                    });
-            }
-        };
-        
+
         // Initialize the tracker
         window.addEventListener('load', async () => {
             try {
                 tracker = new ModernFaceTracker();
             } catch (error) {
                 console.error('Failed to initialize tracker:', error);
-                document.getElementById('statusText').textContent = 'Failed: ' + error.message;
             }
         });
         
