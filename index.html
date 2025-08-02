@@ -673,6 +673,9 @@
                         faceMeshFound = true;
                         
                         child.material.morphTargets = true;
+
+                        child.material.colorWrite = false; // Disable color white to prevent issues
+
                         child.material.needsUpdate = true;
                         console.log('Found face mesh with morph targets:', this.morphTargetNames);
                     }
@@ -695,6 +698,7 @@
                 const size = box.getSize(new THREE.Vector3());
                 const baseScale = 0.4;
                 this.faceModel.scale.setScalar(baseScale);
+                this.faceModel.position.z = 0;
                 
                 console.log(`${modelType} setup complete with persistent model system`);
             }
@@ -864,10 +868,12 @@
                 this.persistentPivotGroup = new THREE.Group();
                 this.persistentPivotGroup.name = 'persistentFacePivot';
                 
+                
                 // Create persistent face model
                 this.persistentFaceModel = this.faceModel.clone();
                 this.persistentFaceModel.name = 'persistentFaceModel';
                 this.persistentFaceModel.position.set(0, 0, 0);
+                this.persistentFaceModel.position.z = 0;
                 
                 // Create persistent blending layer
                 if (this.blendingLayer) {
@@ -888,12 +894,12 @@
                     
                     // PROPER INITIAL POSITION - centered on face 
                     this.persistentGlasses.position.set(0, 0.15, 0.20);
-                    this.persistentGlasses.scale.setScalar(1.5);
+                    this.persistentGlasses.scale.setScalar(1.0);
                     
                     // Set up materials for proper occlusion and visibility
                     this.persistentGlasses.traverse((child) => {
                         if (child.isMesh) {
-                            child.renderOrder = 10; // Render after face but before other elements
+                            child.renderOrder = 2; // Render after face but before other elements
                             child.material.transparent = true;
                             child.material.opacity = 0.5;
                             child.material.depthTest = true;
@@ -950,7 +956,7 @@
                         const relativePos = {
                             x: (glassesCenter.x - this.smoothedPosition.x) * 2.2,
                             y: (glassesCenter.y - this.smoothedPosition.y) * 2.2 + 0.25, // Position at nose bridge
-                            z: 0.27 
+                            z: 0.23
                         };
                         
                         // Very responsive tracking for glasses
@@ -993,7 +999,8 @@
                     
                     // Update pivot position (face tracking)
                     const facePosition = this.convertToWorldCoords(this.smoothedPosition);
-                    this.persistentPivotGroup.position.set(facePosition.x, facePosition.y, facePosition.z);
+                    this.persistentPivotGroup.position.set(facePosition.x, facePosition.y, 0);
+
                     
                     // Clear and apply rotations
                     this.persistentPivotGroup.rotation.set(0, 0, 0);
@@ -1012,7 +1019,7 @@
                         this.persistentGlasses.visible = true;
                         
                         // Scale glasses proportionally with face
-                        this.persistentGlasses.scale.setScalar(finalScale * 0.8); // Slightly smaller than face
+                        this.persistentGlasses.scale.setScalar(finalScale * 1.0); // Slightly smaller than face
                         
                         // Apply same head rotation for natural movement
                         this.persistentGlasses.rotation.set(0, 0, this.headRotation.z);
@@ -1027,6 +1034,7 @@
                     if (this.persistentBlendingLayer) {
                         this.persistentBlendingLayer.scale.setScalar(finalScale * 1.1);
                         this.persistentBlendingLayer.rotation.set(0, 0, this.headRotation.z);
+                        this.persistentBlendingLayer.position.z = 0; 
                     }
                     
                     // Update morph targets
@@ -1043,6 +1051,8 @@
                     
                     // Make sure everything is visible
                     this.persistentPivotGroup.visible = true;
+
+                    this.persistentPivotGroup.position.z = 0; 
                     
                     // Render
                     this.renderer.clear();
@@ -1454,100 +1464,6 @@
                 });
             }
 
-            renderFaceModel() {
-                if (!this.faceModel || !this.renderer) return;
-                
-                // Clear previous render
-                this.renderer.clear();
-                
-                // Remove previous models
-                if (this.scene.getObjectByName('faceModel')) {
-                    this.scene.remove(this.scene.getObjectByName('faceModel'));
-                }
-                if (this.scene.getObjectByName('blendingLayer')) {
-                    this.scene.remove(this.scene.getObjectByName('blendingLayer'));
-                }
-                
-                // PIVOT POINT SYSTEM: Create a pivot group for proper face-anchored rotation
-                const pivotGroup = new THREE.Group();
-                pivotGroup.name = 'facePivot';
-                
-                // Set pivot position to the face position
-                const facePosition = this.convertToWorldCoords(this.smoothedPosition);
-                pivotGroup.position.set(facePosition.x, facePosition.y, facePosition.z);
-                
-                // FIXED: Apply pitch and yaw to pivot group (for head turning)
-                pivotGroup.rotation.set(
-                    this.headRotation.x - Math.PI/4,     // Pitch
-                    this.headRotation.y,                 // Yaw  
-                    0                                    // No roll on pivot
-                );
-                
-                // Clone the model and add it to pivot group
-                const modelInstance = this.faceModel.clone();
-                modelInstance.name = 'faceModel';
-                
-                // Position model at origin relative to pivot
-                modelInstance.position.set(0, 0, 0);
-                
-                // FIXED: Apply roll (tilt) directly to the model
-                modelInstance.rotation.set(
-                    0,                                   // No additional pitch
-                    0,                                   // No additional yaw
-                    this.headRotation.z                  // Roll (head tilt)
-                );
-                
-                // Apply scale to the model
-                const finalScale = Math.max(0.2, Math.min(0.7, this.smoothedScale));
-                modelInstance.scale.setScalar(finalScale);
-                
-                // Add model to pivot group
-                pivotGroup.add(modelInstance);
-                
-                // ENHANCED: Add blending layer with same rotation system
-                if (this.blendingLayer) {
-                    const blendingInstance = this.blendingLayer.clone();
-                    blendingInstance.name = 'blendingLayer';
-                    
-                    // Position blending layer at origin relative to pivot
-                    blendingInstance.position.set(0, 0, 0);
-                    
-                    // Apply same roll rotation to blending layer
-                    blendingInstance.rotation.set(
-                        0,                               // No pitch
-                        0,                               // No yaw
-                        this.headRotation.z              // Same roll as main model
-                    );
-                    
-                    blendingInstance.scale.setScalar(finalScale * 1.1);
-                    
-                    pivotGroup.add(blendingInstance);
-                }
-                
-                // Apply morph target expressions (keep existing code)
-                if (this.faceMeshObject && this.morphTargetNames.length > 0) {
-                    const faceMesh = this.findFaceMesh(modelInstance);
-                    if (faceMesh && faceMesh.morphTargetInfluences) {
-                        this.morphTargetNames.forEach((name, index) => {
-                            if (this.smoothedExpressions[name] !== undefined) {
-                                faceMesh.morphTargetInfluences[index] = this.smoothedExpressions[name];
-                            }
-                        });
-                    }
-                }
-                
-                // Add the entire pivot group to scene
-                this.scene.add(pivotGroup);
-                
-                // Render with proper layering
-                this.renderer.render(this.scene, this.threeCamera);
-                
-                // Update sync info
-                const activeExpressions = Object.values(this.smoothedExpressions).filter(v => v > 0.1).length;
-                document.getElementById('syncInfo').textContent = 
-                    `Scale: ${finalScale.toFixed(2)}, Active: ${activeExpressions}, Tilt: ${(this.headRotation.z * 180/Math.PI).toFixed(1)}°`;
-            }
-
             
             findFaceMesh(object) {
                 let faceMesh = null;
@@ -1680,7 +1596,7 @@
             if (tracker && tracker.persistentGlasses) {
                 tracker.persistentGlasses.position.set(0, 0.05, 0.12);
                 tracker.persistentGlasses.rotation.set(0, 0, 0);
-                tracker.persistentGlasses.scale.setScalar(0.7);
+                tracker.persistentGlasses.scale.setScalar(1.0);
                 console.log('Glasses reset to nose bridge position');
             }
         };
