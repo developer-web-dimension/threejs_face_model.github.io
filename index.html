@@ -187,11 +187,11 @@
                 this.realWorldFaceScale = 1.0;
                 
                 // Smoothing factor
-                this.smoothingFactor = 0.3;
+                this.smoothingFactor = 0.05;
                 this.smoothedExpressions = {};
                 this.smoothedPosition = { x: 0, y: 0, z: 0 };
                 this.smoothedRotation = { x: 0, y: 0, z: 0 };
-                this.smoothedScale = 1.0;
+                this.smoothedScale = 0.5;
 
                 this.baselineScale = null;
                 
@@ -339,7 +339,7 @@
                         this.persistentGlasses = this.glassesModel.clone();
                         this.persistentGlasses.name = 'persistentGlasses';
                         this.persistentGlasses.position.set(0, 0.06, 0.14);
-                        this.persistentGlasses.scale.setScalar(1.0);
+                        this.persistentGlasses.scale.setScalar(2.0);
                         
                         this.persistentPivotGroup.add(this.persistentGlasses);
                         console.log('Glasses added to existing model');
@@ -674,7 +674,7 @@
                         
                         child.material.morphTargets = true;
 
-                        child.material.colorWrite = false; // Disable color white to prevent issues
+                        // child.material.colorWrite = false; // Disable color white to prevent issues
 
                         child.material.needsUpdate = true;
                         console.log('Found face mesh with morph targets:', this.morphTargetNames);
@@ -894,7 +894,7 @@
                     
                     // PROPER INITIAL POSITION - centered on face 
                     this.persistentGlasses.position.set(0, 0.15, 0.20);
-                    this.persistentGlasses.scale.setScalar(1.0);
+                    this.persistentGlasses.scale.setScalar(2.0);
                     
                     // Set up materials for proper occlusion and visibility
                     this.persistentGlasses.traverse((child) => {
@@ -1019,7 +1019,7 @@
                         this.persistentGlasses.visible = true;
                         
                         // Scale glasses proportionally with face
-                        this.persistentGlasses.scale.setScalar(finalScale * 1.0); // Slightly smaller than face
+                        this.persistentGlasses.scale.setScalar(finalScale * 1.3); // Slightly smaller than face
                         
                         // Apply same head rotation for natural movement
                         this.persistentGlasses.rotation.set(0, 0, this.headRotation.z);
@@ -1596,7 +1596,7 @@
             if (tracker && tracker.persistentGlasses) {
                 tracker.persistentGlasses.position.set(0, 0.05, 0.12);
                 tracker.persistentGlasses.rotation.set(0, 0, 0);
-                tracker.persistentGlasses.scale.setScalar(1.0);
+                tracker.persistentGlasses.scale.setScalar(1.5);
                 console.log('Glasses reset to nose bridge position');
             }
         };
