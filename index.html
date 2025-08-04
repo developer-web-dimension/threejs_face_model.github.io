@@ -228,8 +228,6 @@
 
                     this.startTracking();
                     this.setupResizeHandler();
-                    // this.setupFileHandler();
-                    
                     
                 } catch (error) {
                     console.error('Initialization failed:', error);
@@ -306,7 +304,7 @@
                     // Setup glasses properties with better materials
                     this.glassesModel.traverse((child) => {
                         if (child.isMesh) {
-                            child.renderOrder = 10; // Render in front of face
+                            child.renderOrder = 5; // Render in front of face
                             
                             // Ensure material is properly configured
                             if (child.material) {
@@ -339,7 +337,7 @@
                         this.persistentGlasses = this.glassesModel.clone();
                         this.persistentGlasses.name = 'persistentGlasses';
                         this.persistentGlasses.position.set(0, 0.06, 0.14);
-                        this.persistentGlasses.scale.setScalar(2.0);
+                        this.persistentGlasses.scale.setScalar(1.5);
                         
                         this.persistentPivotGroup.add(this.persistentGlasses);
                         console.log('Glasses added to existing model');
@@ -355,33 +353,6 @@
                     document.getElementById('modelStatus').style.color = '#ff9800';
                 }
             }
-
-
-            updateModelStatus() {
-                if (this.faceModel && this.glassesLoaded) {
-                    document.getElementById('modelStatus').textContent = 'Face + Glasses Active ✓';
-                    document.getElementById('modelStatus').style.color = '#4CAF50';
-                } else if (this.faceModel) {
-                    document.getElementById('modelStatus').textContent = 'Face Only (No Glasses) ✓';
-                    document.getElementById('modelStatus').style.color = '#ff9800';
-                }
-            }
-
-            // 6. DEBUGGING: Add glasses visibility check
-            checkGlassesVisibility() {
-                if (this.persistentGlasses) {
-                    console.log('Glasses status:', {
-                        visible: this.persistentGlasses.visible,
-                        position: this.persistentGlasses.position,
-                        scale: this.persistentGlasses.scale,
-                        parent: !!this.persistentGlasses.parent,
-                        inScene: !!this.scene.getObjectByName('persistentGlasses', true)
-                    });
-                } else {
-                    console.log('No persistent glasses found');
-                }
-            }
-
             
             async setupCamera() {
                 const configs = [
@@ -624,24 +595,6 @@
                     );
                 });
             }
-            
-            setupFileHandler() {
-                const fileInput = document.getElementById('fileInput');
-                fileInput.addEventListener('change', async (event) => {
-                    const file = event.target.files[0];
-                    if (file) {
-                        try {
-                            const url = URL.createObjectURL(file);
-                            const gltf = await this.loadGLBModelModern(url);
-                            this.setupLoadedModel(gltf, 'Uploaded GLB');
-                            URL.revokeObjectURL(url);
-                        } catch (error) {
-                            console.error('File upload failed:', error);
-                            document.getElementById('modelStatus').textContent = 'Upload Failed ❌';
-                        }
-                    }
-                });
-            }
 
             destroyPersistentModel() {
                 if (this.persistentPivotGroup) {
@@ -679,8 +632,7 @@
                         child.material.needsUpdate = true;
                         console.log('Found face mesh with morph targets:', this.morphTargetNames);
                     }
-                });
-                
+                });                                                                                                                                                                                                                                           
                 if (faceMeshFound) {
                     this.initializeExpressions();
                     document.getElementById('expressionCount').textContent = this.morphTargetNames.length;
@@ -894,7 +846,7 @@
                     
                     // PROPER INITIAL POSITION - centered on face 
                     this.persistentGlasses.position.set(0, 0.15, 0.20);
-                    this.persistentGlasses.scale.setScalar(2.0);
+                    this.persistentGlasses.scale.setScalar(1.5);
                     
                     // Set up materials for proper occlusion and visibility
                     this.persistentGlasses.traverse((child) => {
@@ -956,7 +908,7 @@
                         const relativePos = {
                             x: (glassesCenter.x - this.smoothedPosition.x) * 2.2,
                             y: (glassesCenter.y - this.smoothedPosition.y) * 2.2 + 0.25, // Position at nose bridge
-                            z: 0.23
+                            z: 0.3
                         };
                         
                         // Very responsive tracking for glasses
@@ -1019,7 +971,7 @@
                         this.persistentGlasses.visible = true;
                         
                         // Scale glasses proportionally with face
-                        this.persistentGlasses.scale.setScalar(finalScale * 1.3); // Slightly smaller than face
+                        this.persistentGlasses.scale.setScalar(finalScale * 1.0); // Slightly smaller than face
                         
                         // Apply same head rotation for natural movement
                         this.persistentGlasses.rotation.set(0, 0, this.headRotation.z);
@@ -1123,28 +1075,6 @@
                     document.getElementById('expressionValues').textContent = 'No face detected';
                 }
             }
-
-            updateExpressionDebug() {
-                const activeExpressions = Object.entries(this.smoothedExpressions)
-                    .filter(([name, value]) => value > 0.05)
-                    .sort(([,a], [,b]) => b - a)
-                    .slice(0, 15)
-                    .map(([name, value]) => `${name}: ${value.toFixed(2)}`)
-                    .join('<br>');
-                
-                const debugElement = document.getElementById('expressionValues');
-                const rotationSource = this.facialTransformationMatrix ? 'Matrix' : 'Landmarks';
-                
-                if (activeExpressions) {
-                    debugElement.innerHTML = activeExpressions + 
-                        `<br><br><strong>Position:</strong><br>X: ${this.smoothedPosition.x.toFixed(3)}<br>Y: ${this.smoothedPosition.y.toFixed(3)}<br>Z: ${this.smoothedPosition.z.toFixed(3)}` +
-                        `<br><br><strong>Rotation (${rotationSource}):</strong><br>Pitch: ${(this.headRotation.x * 180/Math.PI).toFixed(1)}°<br>Yaw: ${(this.headRotation.y * 180/Math.PI).toFixed(1)}°<br>Roll: ${(this.headRotation.z * 180/Math.PI).toFixed(1)}°` +
-                        `<br><br><strong>Scale:</strong> ${this.smoothedScale.toFixed(2)}`;
-                } else {
-                    debugElement.innerHTML = 'No active expressions';
-                }
-            }
-
 
             updateHeadRotationFromMatrix() {
                 if (!this.facialTransformationMatrix) return;
@@ -1270,7 +1200,6 @@
                 
                 const landmarks = this.faces[0];
 
-                
                 // FACE CENTER FIX: Calculate center using key facial features for proper positioning
                 const FACE_OVAL = [10, 338, 297, 332, 284, 251, 389, 356, 454, 323, 361, 288, 397, 365, 379, 378, 400, 377, 152, 148, 176, 149, 150, 136, 172, 58, 132, 93, 234, 127, 162, 21, 54, 103, 67, 109];
                 const LEFT_EYE = [33, 7, 163, 144, 145, 153, 154, 155, 133, 173, 157, 158, 159, 160, 161, 246];
@@ -1386,7 +1315,6 @@
                 this.smoothedScale = this.smoothedScale * (1 - scaleSmoothing) + 
                                 this.realWorldFaceScale * scaleSmoothing;
             }
-
 
             calculateRealWorldScale(eyeDistanceNormalized, faceDepthZ) {
                 if (!this.baselineScale) {
@@ -1509,10 +1437,6 @@
                     y: worldY, 
                     z: worldZ
                 };
-            }
-            
-            clearScene() {
-                this.hidePersistentModel();
             }
             
             startTracking() {
