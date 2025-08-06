@@ -337,7 +337,7 @@
                         this.persistentGlasses = this.glassesModel.clone();
                         this.persistentGlasses.name = 'persistentGlasses';
                         this.persistentGlasses.position.set(0, 0.06, 0.14);
-                        this.persistentGlasses.scale.setScalar(1.5);
+                        this.persistentGlasses.scale.setScalar(2.0);
                         
                         this.persistentPivotGroup.add(this.persistentGlasses);
                         console.log('Glasses added to existing model');
@@ -604,8 +604,6 @@
                 
                 this.persistentFaceModel = null;
                 this.persistentBlendingLayer = null;
-                // DON'T destroy glasses here - keep them loaded
-                // this.persistentGlasses = null; // REMOVE THIS LINE
                 this.modelInitialized = false;
                 
                 console.log('Persistent model destroyed, glasses preserved');
@@ -627,7 +625,7 @@
                         
                         child.material.morphTargets = true;
 
-                        // child.material.colorWrite = false; // Disable color white to prevent issues
+                        child.material.colorWrite = false; // Disable color white to prevent issues
 
                         child.material.needsUpdate = true;
                         console.log('Found face mesh with morph targets:', this.morphTargetNames);
@@ -846,7 +844,7 @@
                     
                     // PROPER INITIAL POSITION - centered on face 
                     this.persistentGlasses.position.set(0, 0.15, 0.20);
-                    this.persistentGlasses.scale.setScalar(1.5);
+                    this.persistentGlasses.scale.setScalar(2.0);
                     
                     // Set up materials for proper occlusion and visibility
                     this.persistentGlasses.traverse((child) => {
@@ -908,7 +906,7 @@
                         const relativePos = {
                             x: (glassesCenter.x - this.smoothedPosition.x) * 2.2,
                             y: (glassesCenter.y - this.smoothedPosition.y) * 2.2 + 0.25, // Position at nose bridge
-                            z: 0.3
+                            z: 0.20
                         };
                         
                         // Very responsive tracking for glasses
@@ -951,7 +949,7 @@
                     
                     // Update pivot position (face tracking)
                     const facePosition = this.convertToWorldCoords(this.smoothedPosition);
-                    this.persistentPivotGroup.position.set(facePosition.x, facePosition.y, 0);
+                    this.persistentPivotGroup.position.set(facePosition.x, facePosition.y, -1.0);
 
                     
                     // Clear and apply rotations
@@ -971,7 +969,7 @@
                         this.persistentGlasses.visible = true;
                         
                         // Scale glasses proportionally with face
-                        this.persistentGlasses.scale.setScalar(finalScale * 1.0); // Slightly smaller than face
+                        this.persistentGlasses.scale.setScalar(finalScale * 1.2); // Slightly smaller than face
                         
                         // Apply same head rotation for natural movement
                         this.persistentGlasses.rotation.set(0, 0, this.headRotation.z);
@@ -986,7 +984,7 @@
                     if (this.persistentBlendingLayer) {
                         this.persistentBlendingLayer.scale.setScalar(finalScale * 1.1);
                         this.persistentBlendingLayer.rotation.set(0, 0, this.headRotation.z);
-                        this.persistentBlendingLayer.position.z = 0; 
+                        this.persistentBlendingLayer.position.z = -1.1; 
                     }
                     
                     // Update morph targets
@@ -1004,7 +1002,7 @@
                     // Make sure everything is visible
                     this.persistentPivotGroup.visible = true;
 
-                    this.persistentPivotGroup.position.z = 0; 
+                    this.persistentPivotGroup.position.z = -1; 
                     
                     // Render
                     this.renderer.clear();
@@ -1430,7 +1428,7 @@
                 const worldY = -(facePos.y - 0.5) * 2.0; // Flip Y and convert 0-1 to -1 to 1
                 
                 // Keep model exactly at face depth - no floating!
-                const worldZ = 0.0; // Exactly at the screen plane
+                const worldZ = -1.0; // Exactly at the screen plane
                 
                 return {
                     x: worldX,
